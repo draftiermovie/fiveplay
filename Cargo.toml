@@ -1,0 +1,14 @@
+[package]
+name = "fiveplay"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.20.1", features = ["wav"] }
+avian3d = "0.8.0"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
