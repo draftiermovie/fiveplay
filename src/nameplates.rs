@@ -127,7 +127,7 @@ pub fn update(
         node.left = px(pos.x - WIDTH * 0.5);
         node.top = px(pos.y - 26.);
 
-        let ally = session.mode == Mode::TeamDeathmatch && bot.team == 1;
+        let ally = !crate::score::enemies(session.mode, crate::score::PLAYER, bot.id());
         let alpha = 1. - ((distance - FADE_START) / (MAX_DISTANCE - FADE_START)).clamp(0., 1.);
         let tint = if ally { ALLY } else { HOSTILE }.with_alpha(alpha);
         for child in children.iter() {

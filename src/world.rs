@@ -1,5 +1,5 @@
 use crate::{
-    combat::{Bot, BotSkin},
+    combat::Bot,
     game::*,
     models::{Model, Models},
     player::Player,
@@ -24,6 +24,9 @@ pub struct MapPiece;
 /// Slowly moving scenery (Skyreach clouds).
 #[derive(Component)]
 pub struct Drift(pub f32);
+/// Patrol drones circling high above Skyreach: (radius, height, speed, phase).
+#[derive(Component)]
+pub struct Orbit(f32, f32, f32, f32);
 #[derive(Component)]
 pub struct ArenaCamera;
 #[derive(Component)]
@@ -318,12 +321,13 @@ fn skyreach(commands: &mut Commands, meshes: &mut Assets<Mesh>, models: &Models)
             );
         }
     }
-    // Flank perches: platform (1 m) topped with a smaller one (1.7 m).
+    // Flank perches: platform (1 m) topped with a smaller one (1.5 m),
+    // leaving a 1 m ledge all round so they can be climbed step by step.
     for sx in [-1., 1.] {
         for sz in [-1., 1.] {
             let base = Vec3::new(sx * 22., 0., sz * 10.);
             block(commands, models, Model::Platform, base, 0., S);
-            block(commands, models, Model::Platform, base + Vec3::Y, 0., 1.4);
+            block(commands, models, Model::Platform, base + Vec3::Y, 0., 1.);
         }
     }
     // Decoration: grass tufts on open ground and drifting clouds overhead.
@@ -367,6 +371,23 @@ fn skyreach(commands: &mut Commands, meshes: &mut Assets<Mesh>, models: &Models)
         let scale = Vec3::new(7. + rand() * 7., 2.5 + rand() * 2.5, 5. + rand() * 5.);
         let cloud = prop(commands, models, Model::Cloud, pos, rand() * 3., scale);
         commands.entity(cloud).insert(Drift(0.6 + rand() * 0.8));
+    }
+    for k in 0..3 {
+        let orbit = Orbit(
+            18. + k as f32 * 9.,
+            9. + k as f32 * 2.5,
+            0.12 - k as f32 * 0.025,
+            k as f32 * 2.1,
+        );
+        let drone = prop(
+            commands,
+            models,
+            Model::EnemyFlying,
+            Vec3::new(orbit.0, orbit.1, 0.),
+            0.,
+            Vec3::splat(2.2),
+        );
+        commands.entity(drone).insert(orbit);
     }
 }
 /// Builds the selected map once models are ready, and rebuilds it whenever the
@@ -419,9 +440,8 @@ pub fn build(
     mut progress: ResMut<BuildProgress>,
     mut session: ResMut<Session>,
     loaded: Res<LoadedMap>,
-    palette: Res<Palette>,
+    soldiers: Res<crate::soldier::SoldierKit>,
     models: Res<Models>,
-    mut meshes: ResMut<Assets<Mesh>>,
     assets: Res<AssetServer>,
     bank: Res<crate::audio::AudioBank>,
     crosshairs: Res<crate::ui::Crosshairs>,
@@ -442,58 +462,13 @@ pub fn build(
         1 => {
             for i in 0..6 {
                 let p = spawn_point(i);
-                let team = i % 2;
                 commands
                     .spawn((
-                        Bot {
-                            health: 100.,
-                            cooldown: 1. + i as f32 * 0.2,
-                            respawn: 0.,
-                            team,
-                            index: i,
-                        },
+                        Bot::new(i),
                         Transform::from_translation(p),
                         Visibility::Inherited,
                     ))
-                    .with_children(|c| {
-                        // Sector 05 sentinel: box body and sphere head.
-                        c.spawn((
-                            BotSkin(Map::Sector05),
-                            Transform::default(),
-                            Visibility::Hidden,
-                        ))
-                        .with_children(|c| {
-                            c.spawn((
-                                Mesh3d(meshes.add(Cuboid::new(0.8, 1.2, 0.5))),
-                                MeshMaterial3d(if team == 0 {
-                                    palette.orange.clone()
-                                } else {
-                                    palette.blue.clone()
-                                }),
-                                Transform::from_xyz(0., 0.9, 0.),
-                            ));
-                            c.spawn((
-                                Mesh3d(meshes.add(Sphere::new(0.25))),
-                                MeshMaterial3d(palette.wall.clone()),
-                                Transform::from_xyz(0., 1.7, 0.),
-                            ));
-                        });
-                        // Skyreach: flying drone, turned from the kit's +Z to face -Z.
-                        c.spawn((
-                            BotSkin(Map::Skyreach),
-                            Transform::default(),
-                            Visibility::Hidden,
-                        ))
-                        .with_children(|c| {
-                            c.spawn((
-                                Transform::from_xyz(0., 0.55, 0.)
-                                    .with_rotation(Quat::from_rotation_y(std::f32::consts::PI))
-                                    .with_scale(Vec3::splat(1.8)),
-                                Visibility::default(),
-                            ))
-                            .with_children(|c| models.add_bot(c, team));
-                        });
-                    });
+                    .with_children(|c| crate::soldier::spawn(c, &soldiers));
             }
         }
         _ => {}
@@ -533,7 +508,11 @@ pub fn spawn_point(i: usize) -> Vec3 {
     )
 }
 /// Where the player (re)deploys on each map.
-pub fn player_spawn(map: Map) -> Vec3 {
+/// In team modes the player deploys on Blue's side, near the Blue flag.
+pub fn player_spawn(map: Map, mode: Mode) -> Vec3 {
+    if mode.teams() {
+        return Vec3::new(24., 1., 6.);
+    }
     match map {
         Map::Sector05 => Vec3::new(0., 1., 14.),
         Map::Skyreach => Vec3::new(0., 1., 24.),
@@ -544,17 +523,26 @@ pub fn animate(
     session: Res<Session>,
     mut camera: Single<&mut Transform, With<ArenaCamera>>,
     mut clouds: Query<(&mut Transform, &Drift), Without<ArenaCamera>>,
+    mut drones: Query<(&mut Transform, &Orbit), (Without<ArenaCamera>, Without<Drift>)>,
 ) {
+    for (mut tr, orbit) in &mut drones {
+        let a = time.elapsed_secs() * orbit.2 + orbit.3;
+        tr.translation = Vec3::new(
+            a.cos() * orbit.0,
+            orbit.1 + (time.elapsed_secs() * 1.3 + orbit.3).sin() * 0.4,
+            a.sin() * orbit.0,
+        );
+        // Face along the circle (the kit model faces +Z).
+        tr.rotation = Quat::from_rotation_y(-a);
+    }
     for (mut tr, drift) in &mut clouds {
         tr.translation.x += drift.0 * time.delta_secs();
         if tr.translation.x > 75. {
             tr.translation.x -= 150.;
         }
     }
-    if !matches!(
-        session.screen,
-        Screen::Playing | Screen::Paused | Screen::Dead
-    ) {
+    // Orbit behind menus, but hold the player's view while a match is paused.
+    if session.screen != Screen::Playing && !match_paused(&session) {
         let t = time.elapsed_secs() * 0.07;
         camera.translation = Vec3::new(t.cos() * 27., 18., t.sin() * 27.);
         camera.look_at(Vec3::ZERO, Vec3::Y);

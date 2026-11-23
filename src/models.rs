@@ -94,8 +94,6 @@ pub struct Models {
     /// Per model: every mesh primitive with its transform inside the model.
     parts: Vec<Vec<(Handle<Mesh>, Transform)>>,
     materials: Vec<Handle<StandardMaterial>>,
-    /// Team tints for the flying bots (index = team).
-    teams: [Handle<StandardMaterial>; 2],
 }
 impl Models {
     pub fn load(assets: &AssetServer) -> Self {
@@ -105,7 +103,6 @@ impl Models {
             texture,
             parts: Vec::new(),
             materials: Vec::new(),
-            teams: default(),
         }
     }
     /// Every file the loading screen waits on.
@@ -124,10 +121,6 @@ impl Models {
     /// Spawns the meshes of `model` as children of the entity being built.
     pub fn add(&self, parent: &mut ChildSpawnerCommands, model: Model) {
         self.add_with(parent, model, self.materials[model as usize].clone());
-    }
-    /// Like [`Models::add`], with the flying bot tinted for its team.
-    pub fn add_bot(&self, parent: &mut ChildSpawnerCommands, team: usize) {
-        self.add_with(parent, Model::EnemyFlying, self.teams[team % 2].clone());
     }
     fn add_with(
         &self,
@@ -213,20 +206,6 @@ pub fn resolve(
         .iter()
         .map(|m| materials.add(material(m.flat())))
         .collect();
-    let team = |r: f32, g: f32, b: f32, glow: LinearRgba| {
-        let mut m = material(Model::EnemyFlying.flat());
-        m.base_color = if texture.is_some() {
-            Color::srgb(r, g, b).mix(&Color::WHITE, 0.45)
-        } else {
-            Color::srgb(r, g, b)
-        };
-        m.emissive = glow;
-        m
-    };
-    models.teams = [
-        materials.add(team(0.9, 0.3, 0.18, LinearRgba::rgb(0.5, 0.05, 0.))),
-        materials.add(team(0.2, 0.55, 0.95, LinearRgba::rgb(0., 0.2, 0.6))),
-    ];
     models.materials = built;
     models.parts = parts;
 }

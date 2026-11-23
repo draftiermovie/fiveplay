@@ -10,6 +10,8 @@ pub enum Screen {
     Menu,
     Loadout,
     Settings,
+    /// Key rebinding, reached from Settings.
+    Controls,
     Profile,
     Playing,
     Paused,
@@ -20,6 +22,30 @@ pub enum Screen {
 pub enum Mode {
     FreeForAll,
     TeamDeathmatch,
+    CaptureTheFlag,
+    KingOfTheHill,
+}
+impl Mode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::FreeForAll => "FREE FOR ALL",
+            Mode::TeamDeathmatch => "TEAM DEATHMATCH",
+            Mode::CaptureTheFlag => "CAPTURE THE FLAG",
+            Mode::KingOfTheHill => "KING OF THE HILL",
+        }
+    }
+    pub fn next(self) -> Self {
+        match self {
+            Mode::FreeForAll => Mode::TeamDeathmatch,
+            Mode::TeamDeathmatch => Mode::CaptureTheFlag,
+            Mode::CaptureTheFlag => Mode::KingOfTheHill,
+            Mode::KingOfTheHill => Mode::FreeForAll,
+        }
+    }
+    /// Blue against Red (everything except Free For All).
+    pub fn teams(self) -> bool {
+        self != Mode::FreeForAll
+    }
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Map {
@@ -58,6 +84,8 @@ pub struct Session {
     pub damage: f32,
     pub damage_angle: f32,
     pub elapsed: f32,
+    /// Where Settings returns to: the main menu or the pause menu.
+    pub settings_from: Screen,
 }
 impl Default for Session {
     fn default() -> Self {
@@ -76,6 +104,7 @@ impl Default for Session {
             damage: 0.,
             damage_angle: 0.,
             elapsed: 0.,
+            settings_from: Screen::Menu,
         }
     }
 }
@@ -87,6 +116,8 @@ pub struct Settings {
     pub shadows: bool,
     pub crosshair: usize,
     pub show_fps: bool,
+    pub fullscreen: bool,
+    pub bindings: crate::controls::Bindings,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -97,6 +128,8 @@ impl Default for Settings {
             shadows: true,
             crosshair: 1,
             show_fps: true,
+            fullscreen: false,
+            bindings: default(),
         }
     }
 }
@@ -107,7 +140,9 @@ pub fn input(
     time: Res<Time>,
     options: Res<RunOptions>,
     mut career: ResMut<crate::save::Career>,
+    mut board: ResMut<crate::score::Scoreboard>,
 ) {
+    board.tick(time.delta_secs());
     session.elapsed += time.delta_secs();
     session.hit = (session.hit - time.delta_secs()).max(0.);
     session.damage = (session.damage - time.delta_secs()).max(0.);
@@ -117,6 +152,8 @@ pub fn input(
             Screen::Playing => Screen::Paused,
             Screen::Paused => Screen::Playing,
             Screen::Loading => Screen::Loading,
+            Screen::Settings => session.settings_from,
+            Screen::Controls => Screen::Settings,
             _ => Screen::Menu,
         };
     }
@@ -135,12 +172,20 @@ pub fn input(
     }
     if locked {
         session.remaining = (session.remaining - time.delta_secs()).max(0.);
-        if session.remaining == 0. || session.blue >= 30 || session.red >= 30 {
+        if board.finished(&session) {
             session.screen = Screen::Results;
             career.matches += 1;
-            if session.blue > session.red {
+            if board.outcome(&session) == crate::score::Outcome::Win {
                 career.wins += 1;
             }
         }
+    }
+}
+/// True while a match is in progress behind a menu (pause or its settings).
+pub fn match_paused(session: &Session) -> bool {
+    match session.screen {
+        Screen::Paused | Screen::Dead => true,
+        Screen::Settings | Screen::Controls => session.settings_from == Screen::Paused,
+        _ => false,
     }
 }

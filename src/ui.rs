@@ -1,15 +1,21 @@
 use crate::{
     audio::AudioBank,
+    controls::Bind,
     game::*,
     player::Player,
     save::Career,
+    score::{self, Outcome, PLAYER, Scoreboard},
     weapons::{Arsenal, WEAPONS},
     world::BuildProgress,
 };
 use bevy::prelude::*;
 use bevy::{
     picking::hover::Hovered,
-    ui_widgets::{Activate, Button},
+    ui_widgets::{
+        Activate, Button, Slider, SliderPrecision, SliderRange, SliderStep, SliderThumb,
+        SliderValue, TrackClick, ValueChange,
+    },
+    window::{MonitorSelection, WindowMode},
 };
 #[derive(Resource, Default)]
 pub struct Actions(pub Vec<Action>);
@@ -55,12 +61,13 @@ pub enum Action {
     Back,
     Resume,
     Respawn,
-    Sensitivity,
-    Fov,
-    Volume,
     Shadows,
     Crosshair,
     Resolution,
+    Fullscreen,
+    Controls,
+    Rebind(Bind),
+    ResetControls,
     Fps,
     Weapon(usize),
 }
@@ -74,7 +81,21 @@ const SKY: Color = Color::srgb(0.62, 0.9, 1.);
 const INK: Color = Color::srgb(0.05, 0.09, 0.14);
 const MUTED: Color = Color::srgb(0.52, 0.62, 0.72);
 const DANGER: Color = Color::srgb(1., 0.32, 0.24);
-const HELP: &str = "WASD MOVE   /   SHIFT SPRINT   /   CTRL SLIDE   /   SPACE JUMP\nLMB FIRE   /   RMB AIM   /   R RELOAD   /   1-5 WEAPONS   /   ESC PAUSE";
+fn help(settings: &Settings) -> String {
+    let b = &settings.bindings;
+    format!(
+        "{}{}{}{} MOVE   /   {} SPRINT   /   {} SLIDE   /   {} JUMP\nLMB FIRE   /   RMB AIM   /   {} RELOAD   /   1-5 WEAPONS   /   {} SCORES   /   ESC PAUSE",
+        b.name(Bind::Forward),
+        b.name(Bind::Left),
+        b.name(Bind::Back),
+        b.name(Bind::Right),
+        b.name(Bind::Sprint),
+        b.name(Bind::Crouch),
+        b.name(Bind::Jump),
+        b.name(Bind::Reload),
+        b.name(Bind::Scoreboard),
+    )
+}
 /// Curated Kenney crosshairs, in selection order. Outline variants stay legible
 /// on both the dark arena floor and bright emissive trim.
 pub const CROSSHAIRS: [(&str, &str); 8] = [
@@ -387,26 +408,32 @@ fn stat_badge(parent: &mut ChildSpawnerCommands, ui: &UiAssets, value: &str, cap
             text(p, caption, 10., Color::srgb(0.2, 0.28, 0.36));
         });
 }
-fn screen_title(screen: Screen, session: &Session) -> &'static str {
-    match screen {
+fn screen_title(screen: Screen, session: &Session, board: &Scoreboard) -> String {
+    let title = match screen {
         Screen::Loading => "DEPLOYMENT SYSTEMS",
         Screen::Menu => "F I V E P L A Y",
         Screen::Loadout => "SELECT PRIMARY",
         Screen::Settings => "OPERATIONS / SETTINGS",
+        Screen::Controls => "OPERATIONS / CONTROLS",
         Screen::Profile => "SERVICE RECORD",
         Screen::Paused => "MATCH PAUSED",
-        Screen::Dead => "YOU WERE ELIMINATED",
-        Screen::Results => {
-            if session.blue > session.red {
-                "VICTORY"
-            } else if session.blue == session.red {
-                "DRAW"
-            } else {
-                "MATCH COMPLETE"
-            }
+        Screen::Dead => {
+            return match board.killed_by {
+                Some(id) => format!("ELIMINATED BY {}", score::name(id)),
+                None => "YOU WERE ELIMINATED".into(),
+            };
         }
+        Screen::Results => match (board.outcome(session), session.mode) {
+            (Outcome::Win, _) => "VICTORY",
+            (Outcome::Draw, _) => "DRAW",
+            (Outcome::Loss, Mode::FreeForAll) => {
+                return format!("{} PLACE", score::ordinal(board.place(PLAYER)));
+            }
+            (Outcome::Loss, _) => "DEFEAT",
+        },
         Screen::Playing => "",
-    }
+    };
+    title.into()
 }
 fn menu_screen(
     root: &mut ChildSpawnerCommands,
@@ -416,8 +443,11 @@ fn menu_screen(
     session: &Session,
     arsenal: &Arsenal,
     career: &Career,
+    board: &Scoreboard,
+    rebind: &Rebind,
 ) {
     let screen = session.screen;
+    let title = screen_title(screen, session, board);
     root.spawn(Node {
         flex_direction: FlexDirection::Column,
         row_gap: px(12),
@@ -426,12 +456,17 @@ fn menu_screen(
     .with_children(|p| {
         match screen {
             Screen::Menu => {
-                banner_title(p, ui, screen_title(screen, session));
-                text(p, "TACTICAL ARENA  /  SECTOR 05", 13., BLUE);
+                banner_title(p, ui, &title);
+                text(
+                    p,
+                    &format!("TACTICAL ARENA  /  {}", session.map.name()),
+                    13.,
+                    BLUE,
+                );
             }
-            Screen::Results => banner_title(p, ui, screen_title(screen, session)),
-            Screen::Dead => header(p, &ui.panel_danger, screen_title(screen, session)),
-            _ => header(p, &ui.panel_dark, screen_title(screen, session)),
+            Screen::Results => banner_title(p, ui, &title),
+            Screen::Dead => header(p, &ui.panel_danger, &title),
+            _ => header(p, &ui.panel_dark, &title),
         }
         match screen {
             Screen::Loading => {
@@ -470,11 +505,7 @@ fn menu_screen(
                 column_panel(p, &ui.panel_blue, 32., 38., |p| {
                     text(p, "01 / READY TO DEPLOY", 13., SKY);
                     primary_button(p, ui, "PLAY", Action::Play);
-                    let mode = if session.mode == Mode::FreeForAll {
-                        "FREE FOR ALL"
-                    } else {
-                        "TEAM DEATHMATCH"
-                    };
+                    let mode = session.mode.name();
                     button(p, ui, &format!("MODE / {mode}"), Action::Mode);
                     button(p, ui, &format!("MAP / {}", session.map.name()), Action::Map);
                     button(p, ui, "LOADOUT", Action::Loadout);
@@ -492,71 +523,107 @@ fn menu_screen(
                 });
             }
             Screen::Settings => {
-                column_panel(p, &ui.panel_blue, 32., 38., |p| {
-                    p.spawn(panel(
-                        &ui.panel,
-                        18.,
-                        Color::srgb(0.3, 0.36, 0.43),
-                        Node {
-                            width: px(88),
-                            height: px(88),
-                            align_self: AlignSelf::Center,
-                            align_items: AlignItems::Center,
-                            justify_content: JustifyContent::Center,
-                            ..default()
-                        },
-                    ))
-                    .with_children(|p| {
-                        p.spawn((
-                            ImageNode::new(crosshairs.images[settings.crosshair].clone()),
+                p.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(16),
+                    align_items: AlignItems::Start,
+                    flex_wrap: FlexWrap::Wrap,
+                    row_gap: px(16),
+                    ..default()
+                })
+                .with_children(|p| {
+                    column_panel(p, &ui.panel_blue, 32., 38., |p| {
+                        p.spawn(panel(
+                            &ui.panel,
+                            18.,
+                            Color::srgb(0.3, 0.36, 0.43),
                             Node {
-                                width: px(48),
-                                height: px(48),
+                                width: px(72),
+                                height: px(72),
+                                align_self: AlignSelf::Center,
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
                                 ..default()
                             },
-                        ));
+                        ))
+                        .with_children(|p| {
+                            p.spawn((
+                                ImageNode::new(crosshairs.images[settings.crosshair].clone()),
+                                Node {
+                                    width: px(44),
+                                    height: px(44),
+                                    ..default()
+                                },
+                            ));
+                        });
+                        button(
+                            p,
+                            ui,
+                            &format!("CROSSHAIR / {}", CROSSHAIRS[settings.crosshair].0),
+                            Action::Crosshair,
+                        );
+                        for kind in SliderKind::ALL {
+                            setting_slider(p, kind, settings);
+                        }
                     });
-                    button(
+                    column_panel(p, &ui.panel_blue, 32., 38., |p| {
+                        let on = |v: bool| if v { "ON" } else { "OFF" };
+                        button(
+                            p,
+                            ui,
+                            &format!("FULLSCREEN / {}", on(settings.fullscreen)),
+                            Action::Fullscreen,
+                        );
+                        button(
+                            p,
+                            ui,
+                            &format!("SHADOWS / {}", on(settings.shadows)),
+                            Action::Shadows,
+                        );
+                        button(
+                            p,
+                            ui,
+                            &format!("FPS COUNTER / {}", on(settings.show_fps)),
+                            Action::Fps,
+                        );
+                        button(p, ui, "RESOLUTION / 1080p-4K", Action::Resolution);
+                        button(p, ui, "CONTROLS", Action::Controls);
+                        primary_button(
+                            p,
+                            ui,
+                            if session.settings_from == Screen::Paused {
+                                "BACK TO MATCH MENU"
+                            } else {
+                                "BACK"
+                            },
+                            Action::Back,
+                        );
+                    });
+                });
+            }
+            Screen::Controls => {
+                column_panel(p, &ui.panel_blue, 32., 38., |p| {
+                    text(
                         p,
-                        ui,
-                        &format!("CROSSHAIR / {}", CROSSHAIRS[settings.crosshair].0),
-                        Action::Crosshair,
+                        "CLICK AN ACTION, THEN PRESS A KEY  /  ESC CANCELS",
+                        12.,
+                        SKY,
                     );
-                    button(
-                        p,
-                        ui,
-                        &format!("SENSITIVITY / {:.1}", settings.sensitivity * 1000.),
-                        Action::Sensitivity,
-                    );
-                    button(
-                        p,
-                        ui,
-                        &format!("FIELD OF VIEW / {:.0} DEG", settings.fov),
-                        Action::Fov,
-                    );
-                    button(
-                        p,
-                        ui,
-                        &format!("AUDIO / {:.0}%", settings.volume * 100.),
-                        Action::Volume,
-                    );
-                    button(
-                        p,
-                        ui,
-                        &format!("SHADOWS / {}", if settings.shadows { "ON" } else { "OFF" }),
-                        Action::Shadows,
-                    );
-                    button(
-                        p,
-                        ui,
-                        &format!(
-                            "FPS COUNTER / {}",
-                            if settings.show_fps { "ON" } else { "OFF" }
-                        ),
-                        Action::Fps,
-                    );
-                    button(p, ui, "RESOLUTION / 1080p-4K", Action::Resolution);
-                    button(p, ui, "BACK", Action::Back);
+                    for bind in Bind::ALL {
+                        let key = if rebind.0 == Some(bind) {
+                            "PRESS A KEY..."
+                        } else {
+                            settings.bindings.name(bind)
+                        };
+                        button(
+                            p,
+                            ui,
+                            &format!("{}  /  {key}", bind.label()),
+                            Action::Rebind(bind),
+                        );
+                    }
+                    button(p, ui, "RESET TO DEFAULTS", Action::ResetControls);
+                    primary_button(p, ui, "BACK", Action::Back);
                 });
             }
             Screen::Profile => {
@@ -610,29 +677,29 @@ fn menu_screen(
             Screen::Paused => {
                 column_panel(p, &ui.panel_blue, 32., 38., |p| {
                     primary_button(p, ui, "RESUME", Action::Resume);
+                    button(p, ui, "SETTINGS", Action::Settings);
                     danger_button(p, ui, "LEAVE MATCH", Action::Back);
                 });
             }
             Screen::Dead => {
                 column_panel(p, &ui.panel_dark, 18., 26., |p| {
+                    standings_table(p);
                     primary_button(p, ui, "REDEPLOY", Action::Respawn);
                     button(p, ui, "MAIN MENU", Action::Back);
                 });
             }
             Screen::Results => {
                 column_panel(p, &ui.panel_dark, 18., 26., |p| {
-                    text(
-                        p,
-                        &format!("BLUE {}   /   RED {}", session.blue, session.red),
-                        18.,
-                        Color::WHITE,
-                    );
-                    text(
-                        p,
-                        &format!("{} KILLS  -  {} DEATHS", session.kills, session.deaths),
-                        15.,
-                        Color::srgb(0.86, 0.93, 1.),
-                    );
+                    let summary = match session.mode {
+                        Mode::FreeForAll => format!(
+                            "YOU PLACED {}   /   WINNER {}",
+                            score::ordinal(board.place(PLAYER)),
+                            score::name(board.leader())
+                        ),
+                        _ => format!("BLUE {}   /   RED {}", session.blue, session.red),
+                    };
+                    text(p, &summary, 17., Color::WHITE);
+                    standings_table(p);
                     primary_button(p, ui, "PLAY AGAIN", Action::Play);
                     button(p, ui, "MAIN MENU", Action::Back);
                 });
@@ -640,7 +707,7 @@ fn menu_screen(
             Screen::Playing => {}
         }
     });
-    text(root, HELP, 12., MUTED);
+    text(root, &help(settings), 12., MUTED);
 }
 fn hud(
     root: &mut ChildSpawnerCommands,
@@ -687,6 +754,54 @@ fn hud(
             });
         label(p, "", 17., DANGER, 6);
     });
+    // Kill feed, top right below the FPS counter.
+    root.spawn(Node {
+        position_type: PositionType::Absolute,
+        right: px(24),
+        top: px(48),
+        flex_direction: FlexDirection::Column,
+        align_items: AlignItems::End,
+        ..default()
+    })
+    .with_children(|p| {
+        p.spawn((
+            KillFeed,
+            Text::new(""),
+            TextFont {
+                font_size: 14.0.into(),
+                ..default()
+            },
+            TextColor(Color::WHITE),
+            TextShadow {
+                offset: Vec2::splat(1.5),
+                color: Color::srgba(0., 0., 0., 0.8),
+            },
+        ));
+    });
+    // Hold TAB: full standings.
+    root.spawn((
+        ScorePanel,
+        Node {
+            position_type: PositionType::Absolute,
+            left: percent(0),
+            top: percent(22.),
+            width: percent(100),
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        Visibility::Hidden,
+    ))
+    .with_children(|p| {
+        p.spawn(panel(&ui.panel_dark, 18., Color::WHITE, Node::default()))
+            .with_children(|p| {
+                p.spawn(Node {
+                    padding: UiRect::axes(px(26), px(18)),
+                    flex_direction: FlexDirection::Column,
+                    ..default()
+                })
+                .with_children(standings_table);
+            });
+    });
     root.spawn(Node {
         position_type: PositionType::Absolute,
         left: percent(0),
@@ -730,7 +845,7 @@ fn hud(
             align_items: AlignItems::End,
             ..default()
         })
-        .with_children(|p| text(p, HELP, 11., MUTED));
+        .with_children(|p| text(p, &help(settings), 11., MUTED));
     });
 }
 pub fn setup(mut commands: Commands, assets: Res<AssetServer>) {
@@ -788,6 +903,11 @@ pub fn refresh(
     mut labels: Query<(&Label, &mut Text)>,
     mut bars: Query<&mut Node, With<LoadingBar>>,
     mut reticles: Query<(&mut ImageNode, &mut UiTransform), With<Crosshair>>,
+    (board, rebind, objective): (
+        Res<Scoreboard>,
+        Res<Rebind>,
+        Res<crate::objective::Objective>,
+    ),
 ) {
     let screen = session.screen;
     for mut bar in &mut bars {
@@ -800,11 +920,7 @@ pub fn refresh(
                     "{:03}  HP     /     {}     /     {}     /     {:02} : {:02}",
                     player.health.max(0.) as u32,
                     session.map.name(),
-                    if session.mode == Mode::FreeForAll {
-                        "FREE FOR ALL"
-                    } else {
-                        "TEAM DEATHMATCH"
-                    },
+                    session.mode.name(),
                     session.remaining as u32 / 60,
                     session.remaining as u32 % 60
                 ),
@@ -823,10 +939,28 @@ pub fn refresh(
                     if session.notice_time > 0. {
                         session.notice.clone()
                     } else {
-                        format!(
-                            "BLUE {:02}    /    RED {:02}     /     FIRST TO 30",
-                            session.blue, session.red
-                        )
+                        match session.mode {
+                            Mode::CaptureTheFlag | Mode::KingOfTheHill => {
+                                objective.hud_line(&session).unwrap_or_default()
+                            }
+                            Mode::TeamDeathmatch => format!(
+                                "BLUE {:02}    /    RED {:02}     /     FIRST TO {}",
+                                session.blue,
+                                session.red,
+                                score::TDM_LIMIT
+                            ),
+                            Mode::FreeForAll => {
+                                let leader = board.leader();
+                                format!(
+                                    "YOU {:02}  ({})    /    LEADER {} {:02}     /     FIRST TO {}",
+                                    board.kills[PLAYER],
+                                    score::ordinal(board.place(PLAYER)),
+                                    score::name(leader),
+                                    board.kills[leader],
+                                    score::FFA_LIMIT
+                                )
+                            }
+                        }
                     }
                 }
                 5 => format!(
@@ -913,6 +1047,8 @@ pub fn refresh(
                     &session,
                     &arsenal,
                     &career,
+                    &board,
+                    &rebind,
                 );
             }
         });
@@ -928,10 +1064,19 @@ pub fn interact(
     mut window: Single<&mut Window>,
     mut exit: MessageWriter<AppExit>,
     mut bots: Query<(&mut crate::combat::Bot, &mut Transform, &mut Visibility), Without<Player>>,
+    (mut board, mut rebind, mut objective): (
+        ResMut<Scoreboard>,
+        ResMut<Rebind>,
+        ResMut<crate::objective::Objective>,
+    ),
 ) {
     for action in actions.0.drain(..) {
         match action {
             Action::Play => {
+                board.reset();
+                objective.reset();
+                session.notice_time = 0.;
+                session.damage = 0.;
                 session.kills = 0;
                 session.deaths = 0;
                 session.blue = 0;
@@ -942,24 +1087,18 @@ pub fn interact(
                 player.0.velocity = Vec3::ZERO;
                 player.0.yaw = 0.;
                 player.0.pitch = 0.;
-                player.1.translation = crate::world::player_spawn(session.map);
+                player.1.translation = crate::world::player_spawn(session.map, session.mode);
                 let selected = arsenal.selected;
                 *arsenal = Arsenal::default();
                 arsenal.selected = selected;
                 for (mut bot, mut transform, mut visibility) in &mut bots {
-                    bot.health = 100.;
-                    bot.respawn = 0.;
-                    bot.cooldown = 1.;
+                    bot.revive();
                     transform.translation = crate::world::spawn_point(bot.index);
                     *visibility = Visibility::Inherited;
                 }
             }
             Action::Mode => {
-                session.mode = if session.mode == Mode::FreeForAll {
-                    Mode::TeamDeathmatch
-                } else {
-                    Mode::FreeForAll
-                };
+                session.mode = session.mode.next();
                 state.0 = Screen::Loading;
             }
             Action::Map => {
@@ -967,43 +1106,50 @@ pub fn interact(
                 state.0 = Screen::Loading;
             }
             Action::Loadout => session.screen = Screen::Loadout,
-            Action::Settings => session.screen = Screen::Settings,
+            Action::Settings => {
+                session.settings_from = if session.screen == Screen::Paused {
+                    Screen::Paused
+                } else {
+                    Screen::Menu
+                };
+                session.screen = Screen::Settings;
+            }
+            Action::Controls => session.screen = Screen::Controls,
+            Action::Rebind(bind) => {
+                rebind.0 = Some(bind);
+                state.0 = Screen::Loading;
+            }
+            Action::ResetControls => {
+                settings.bindings = default();
+                rebind.0 = None;
+                state.0 = Screen::Loading;
+            }
+            Action::Fullscreen => {
+                settings.fullscreen = !settings.fullscreen;
+                window.mode = window_mode(settings.fullscreen);
+                state.0 = Screen::Loading;
+            }
             Action::Profile => session.screen = Screen::Profile,
             Action::Quit => {
                 exit.write(AppExit::Success);
             }
-            Action::Back => session.screen = Screen::Menu,
+            Action::Back => {
+                rebind.0 = None;
+                session.screen = match session.screen {
+                    Screen::Settings => session.settings_from,
+                    Screen::Controls => Screen::Settings,
+                    _ => Screen::Menu,
+                };
+            }
             Action::Resume => session.screen = Screen::Playing,
             Action::Respawn => {
                 player.0.health = 100.;
                 player.0.velocity = Vec3::ZERO;
-                player.1.translation = crate::world::player_spawn(session.map);
+                player.1.translation = crate::world::player_spawn(session.map, session.mode);
                 let selected = arsenal.selected;
                 *arsenal = Arsenal::default();
                 arsenal.selected = selected;
                 session.screen = Screen::Playing;
-            }
-            Action::Sensitivity => {
-                // Snap to the 0.0005 grid so repeated steps do not drift.
-                settings.sensitivity = ((settings.sensitivity + 0.0005) * 2000.).round() / 2000.;
-                if settings.sensitivity > 0.005 {
-                    settings.sensitivity = 0.001;
-                }
-                state.0 = Screen::Loading;
-            }
-            Action::Fov => {
-                settings.fov += 5.;
-                if settings.fov > 110. {
-                    settings.fov = 75.;
-                }
-                state.0 = Screen::Loading;
-            }
-            Action::Volume => {
-                settings.volume = ((settings.volume + 0.1) * 10.).round() / 10.;
-                if settings.volume > 1.01 {
-                    settings.volume = 0.;
-                }
-                state.0 = Screen::Loading;
             }
             Action::Shadows => {
                 settings.shadows = !settings.shadows;
@@ -1113,4 +1259,316 @@ pub fn fps(
     } else {
         DANGER
     };
+}
+
+/// The HUD's TAB standings overlay.
+#[derive(Component)]
+pub struct ScorePanel;
+#[derive(Component)]
+pub struct KillFeed;
+/// One cell of a standings table: `row` 0 is the header, 1.. are places.
+#[derive(Component)]
+pub struct ScoreCell {
+    row: usize,
+    col: usize,
+}
+/// A standings table whose cells `standings` fills every frame.
+fn standings_table(p: &mut ChildSpawnerCommands) {
+    for row in 0..=score::COMBATANTS {
+        p.spawn(Node {
+            flex_direction: FlexDirection::Row,
+            padding: UiRect::vertical(px(2)),
+            ..default()
+        })
+        .with_children(|r| {
+            for (col, width) in [(0, 190.), (1, 70.), (2, 70.)] {
+                r.spawn(Node {
+                    width: px(width),
+                    justify_content: if col == 0 {
+                        JustifyContent::Start
+                    } else {
+                        JustifyContent::End
+                    },
+                    ..default()
+                })
+                .with_children(|c| {
+                    c.spawn((
+                        ScoreCell { row, col },
+                        Text::new(""),
+                        TextFont {
+                            font_size: if row == 0 { 12. } else { 15. }.into(),
+                            ..default()
+                        },
+                        TextColor(MUTED),
+                    ));
+                });
+            }
+        });
+    }
+}
+/// Fills standings tables, shows the TAB overlay and writes the kill feed.
+pub fn standings(
+    session: Res<Session>,
+    settings: Res<Settings>,
+    board: Res<Scoreboard>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut cells: Query<(&ScoreCell, &mut Text, &mut TextColor), Without<KillFeed>>,
+    mut panels: Query<&mut Visibility, With<ScorePanel>>,
+    mut feed: Query<&mut Text, With<KillFeed>>,
+) {
+    let order = board.standings();
+    for (cell, mut text, mut color) in &mut cells {
+        let value = if cell.row == 0 {
+            color.0 = MUTED;
+            ["PLAYER", "KILLS", "DEATHS"][cell.col].to_string()
+        } else {
+            let id = order[cell.row - 1];
+            color.0 = if id == PLAYER {
+                SKY
+            } else if session.mode.teams() {
+                if score::team(id) == score::BLUE {
+                    Color::srgb(0.45, 0.82, 1.)
+                } else {
+                    Color::srgb(1., 0.5, 0.4)
+                }
+            } else {
+                Color::WHITE
+            };
+            match cell.col {
+                0 => format!("{}  {}", score::ordinal(board.place(id)), score::name(id)),
+                1 => board.kills[id].to_string(),
+                _ => board.deaths[id].to_string(),
+            }
+        };
+        if text.0 != value {
+            text.0 = value;
+        }
+    }
+    let show =
+        session.screen == Screen::Playing && settings.bindings.pressed(&keys, Bind::Scoreboard);
+    for mut visibility in &mut panels {
+        let target = if show {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *visibility != target {
+            *visibility = target;
+        }
+    }
+    let lines: Vec<&str> = board.feed.iter().map(|(line, _)| line.as_str()).collect();
+    let value = lines.join("\n");
+    for mut text in &mut feed {
+        if text.0 != value {
+            text.0 = value.clone();
+        }
+    }
+}
+
+pub fn window_mode(fullscreen: bool) -> WindowMode {
+    if fullscreen {
+        WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+    } else {
+        WindowMode::Windowed
+    }
+}
+
+/// The action waiting for a key on the Controls screen.
+#[derive(Resource, Default)]
+pub struct Rebind(pub Option<Bind>);
+/// Assigns the next key press to the waiting action. Runs before
+/// `game::input` and consumes the key, so Escape cancels the capture instead
+/// of leaving the screen.
+pub fn capture_key(
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut rebind: ResMut<Rebind>,
+    mut settings: ResMut<Settings>,
+    mut state: ResMut<UiState>,
+    session: Res<Session>,
+) {
+    let Some(bind) = rebind.0 else {
+        return;
+    };
+    if session.screen != Screen::Controls {
+        rebind.0 = None;
+        return;
+    }
+    let Some(&key) = keys.get_just_pressed().next() else {
+        return;
+    };
+    keys.clear_just_pressed(key);
+    if key == KeyCode::Escape {
+        rebind.0 = None;
+    } else if crate::controls::key_label(key).is_some() {
+        settings.bindings.set(bind, key);
+        rebind.0 = None;
+    } else {
+        // Reserved (weapon keys 1-5) or unsupported: keep waiting.
+        return;
+    }
+    state.0 = Screen::Loading;
+}
+
+/// The settings adjusted with a slider.
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub enum SliderKind {
+    Sensitivity,
+    Fov,
+    Volume,
+}
+impl SliderKind {
+    const ALL: [SliderKind; 3] = [SliderKind::Sensitivity, SliderKind::Fov, SliderKind::Volume];
+    /// (min, max, step, decimal places) in display units.
+    fn range(self) -> (f32, f32, f32, i32) {
+        match self {
+            SliderKind::Sensitivity => (0.5, 10., 0.1, 1),
+            SliderKind::Fov => (60., 120., 1., 0),
+            SliderKind::Volume => (0., 100., 1., 0),
+        }
+    }
+    fn get(self, s: &Settings) -> f32 {
+        match self {
+            SliderKind::Sensitivity => s.sensitivity * 1000.,
+            SliderKind::Fov => s.fov,
+            SliderKind::Volume => s.volume * 100.,
+        }
+    }
+    fn set(self, s: &mut Settings, v: f32) {
+        match self {
+            SliderKind::Sensitivity => s.sensitivity = v / 1000.,
+            SliderKind::Fov => s.fov = v,
+            SliderKind::Volume => s.volume = v / 100.,
+        }
+    }
+    fn caption(self, s: &Settings) -> String {
+        let v = self.get(s);
+        match self {
+            SliderKind::Sensitivity => format!("SENSITIVITY   {v:.1}"),
+            SliderKind::Fov => format!("FIELD OF VIEW   {v:.0} DEG"),
+            SliderKind::Volume => format!("AUDIO   {v:.0}%"),
+        }
+    }
+}
+#[derive(Component)]
+pub struct SliderCaption(SliderKind);
+#[derive(Component)]
+pub struct SliderKnob;
+const KNOB: f32 = 18.;
+/// A caption plus a draggable slider (click the rail to jump, drag the knob,
+/// or use the arrow keys once it has focus).
+fn setting_slider(p: &mut ChildSpawnerCommands, kind: SliderKind, settings: &Settings) {
+    let (min, max, step, places) = kind.range();
+    p.spawn(Node {
+        flex_direction: FlexDirection::Column,
+        row_gap: px(6),
+        padding: UiRect::vertical(px(4)),
+        ..default()
+    })
+    .with_children(|p| {
+        p.spawn((
+            SliderCaption(kind),
+            Text::new(kind.caption(settings)),
+            TextFont {
+                font_size: 15.0.into(),
+                ..default()
+            },
+            TextColor(Color::WHITE),
+        ));
+        p.spawn((
+            kind,
+            Slider {
+                track_click: TrackClick::Snap,
+                ..default()
+            },
+            SliderValue(kind.get(settings)),
+            SliderRange::new(min, max),
+            SliderStep(step),
+            SliderPrecision(places),
+            Hovered::default(),
+            bevy::input_focus::tab_navigation::TabIndex(0),
+            Node {
+                width: percent(100),
+                height: px(KNOB),
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+        ))
+        .with_children(|p| {
+            // Rail.
+            p.spawn((
+                Node {
+                    height: px(6),
+                    border_radius: BorderRadius::all(px(3)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.02, 0.05, 0.1, 0.6)),
+            ));
+            // Travel area, short by the knob width so the knob never overhangs.
+            p.spawn(Node {
+                position_type: PositionType::Absolute,
+                left: px(0),
+                right: px(KNOB),
+                top: px(0),
+                bottom: px(0),
+                ..default()
+            })
+            .with_children(|p| {
+                p.spawn((
+                    SliderKnob,
+                    SliderThumb,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: px(KNOB),
+                        height: px(KNOB),
+                        border_radius: BorderRadius::MAX,
+                        left: percent(0),
+                        ..default()
+                    },
+                    BackgroundColor(SKY),
+                ));
+            });
+        });
+    });
+}
+/// Applies a slider move to the settings as it happens.
+pub fn slider_changed(
+    change: On<ValueChange<f32>>,
+    kinds: Query<&SliderKind>,
+    mut settings: ResMut<Settings>,
+    mut commands: Commands,
+) {
+    if let Ok(kind) = kinds.get(change.source) {
+        kind.set(&mut settings, change.value);
+        commands
+            .entity(change.source)
+            .insert(SliderValue(change.value));
+    }
+}
+/// Moves each knob to its value and keeps the captions current.
+pub fn sliders(
+    settings: Res<Settings>,
+    sliders: Query<(&SliderValue, &SliderRange, &Hovered, &Children), With<SliderKind>>,
+    travel: Query<&Children, Without<SliderKind>>,
+    mut knobs: Query<(&mut Node, &mut BackgroundColor), With<SliderKnob>>,
+    mut captions: Query<(&SliderCaption, &mut Text)>,
+) {
+    for (value, range, hovered, children) in &sliders {
+        for child in children.iter() {
+            let Ok(grandchildren) = travel.get(child) else {
+                continue;
+            };
+            for knob in grandchildren.iter() {
+                if let Ok((mut node, mut color)) = knobs.get_mut(knob) {
+                    node.left = percent(range.thumb_position(value.0) * 100.);
+                    color.0 = if hovered.get() { Color::WHITE } else { SKY };
+                }
+            }
+        }
+    }
+    if settings.is_changed() {
+        for (caption, mut text) in &mut captions {
+            text.0 = caption.0.caption(&settings);
+        }
+    }
 }

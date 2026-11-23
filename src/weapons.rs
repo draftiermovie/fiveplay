@@ -1,8 +1,9 @@
 use crate::{
-    combat::{Bot, Effect, ray_sphere},
+    combat::{Bot, Effect},
     game::*,
     models::{Model, Models},
     player::Player,
+    score::{self, PLAYER, Scoreboard},
     world::{ArenaCamera, Palette},
 };
 use avian3d::prelude::*;
@@ -147,7 +148,7 @@ pub fn update(
     mouse: Res<ButtonInput<MouseButton>>,
     wheel: Res<bevy::input::mouse::AccumulatedMouseScroll>,
     mut session: ResMut<Session>,
-    mut career: ResMut<crate::save::Career>,
+    (mut career, mut board): (ResMut<crate::save::Career>, ResMut<Scoreboard>),
     settings: Res<Settings>,
     mut arsenal: ResMut<Arsenal>,
     mut player: Single<&mut Player>,
@@ -155,7 +156,7 @@ pub fn update(
     mut bots: Query<(&mut Bot, &Transform), Without<ArenaCamera>>,
     spatial: SpatialQuery,
     // Grouped: Bevy systems accept at most 16 parameters.
-    (palette, models): (Res<Palette>, Res<Models>),
+    (palette, models, soldiers): (Res<Palette>, Res<Models>, Res<crate::soldier::SoldierKit>),
     mut meshes: ResMut<Assets<Mesh>>,
     mut guns: Query<&mut Transform, (With<ViewGun>, Without<ArenaCamera>, Without<Bot>)>,
 ) {
@@ -170,6 +171,7 @@ pub fn update(
                 Visibility::Inherited,
             ))
             .with_children(|g| {
+                crate::soldier::view_arms(g, &soldiers);
                 // One blaster per weapon; `skins` shows the selected one. The glTF
                 // models are authored facing +Z; they are turned to face -Z.
                 for (i, (model, scale)) in VIEW_MODELS.iter().enumerate() {
@@ -246,7 +248,9 @@ pub fn update(
             0.2,
         );
     }
-    if keys.just_pressed(KeyCode::KeyR)
+    if settings
+        .bindings
+        .just_pressed(&keys, crate::controls::Bind::Reload)
         && arsenal.ammo[index] < weapon.magazine
         && arsenal.reserve[index] > 0
     {
@@ -299,35 +303,28 @@ pub fn update(
         let mut nearest = wall;
         let mut victim = None;
         for (bot, tr) in &bots {
-            if bot.health <= 0. || session.mode == Mode::TeamDeathmatch && bot.team == 1 {
+            if bot.health <= 0. || !score::enemies(session.mode, PLAYER, bot.id()) {
                 continue;
             }
-            let head = ray_sphere(origin, direction, tr.translation + Vec3::Y * 1.7, 0.27);
-            let body = ray_sphere(origin, direction, tr.translation + Vec3::Y * 0.85, 0.62);
-            let hit = match (head, body) {
-                (Some(h), Some(b)) => Some(if h < b { (h, true) } else { (b, false) }),
-                (Some(h), None) => Some((h, true)),
-                (None, Some(b)) => Some((b, false)),
-                _ => None,
-            };
-            if let Some((distance, head)) = hit {
+            let hit = crate::combat::hit_soldier(origin, direction, tr.translation);
+            if let Some((distance, mult, head)) = hit {
                 if distance < nearest {
                     nearest = distance;
-                    victim = Some((bot.index, head));
+                    victim = Some((bot.index, mult, head));
                 }
             }
         }
-        if let Some((id, head)) = victim {
+        if let Some((id, mult, head)) = victim {
             hurt = true;
             for (mut bot, _) in &mut bots {
                 if bot.index == id {
-                    bot.health -= weapon.damage * if head { 2.5 } else { 1. };
+                    bot.health -= weapon.damage * mult;
+                    bot.hurt_time = 0.;
+                    bot.attacker = Some(PLAYER);
                     session.hit = 0.15;
                     if bot.health <= 0. {
                         bot.respawn = 3.;
-                        session.kills += 1;
-                        career.kills += 1;
-                        session.blue += 1;
+                        board.record(&mut session, &mut career, PLAYER, bot.id(), head);
                         session.notice = format!(
                             "{}  /  SENTINEL {:02}",
                             if head { "HEADSHOT" } else { "ELIMINATED" },

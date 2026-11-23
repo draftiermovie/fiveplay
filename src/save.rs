@@ -2,6 +2,7 @@
 //! file in the user's data directory. Unknown or malformed lines are ignored
 //! so an old or hand-edited save never prevents the game from starting.
 use crate::{
+    controls::{Bind, Bindings, key_from_id, key_id},
     game::*,
     ui::CROSSHAIRS,
     weapons::{Arsenal, WEAPONS},
@@ -35,6 +36,8 @@ pub struct SettingsData {
     pub shadows: bool,
     pub crosshair: usize,
     pub show_fps: bool,
+    pub fullscreen: bool,
+    pub bindings: Bindings,
 }
 impl From<&Settings> for SettingsData {
     fn from(s: &Settings) -> Self {
@@ -45,6 +48,8 @@ impl From<&Settings> for SettingsData {
             shadows: s.shadows,
             crosshair: s.crosshair,
             show_fps: s.show_fps,
+            fullscreen: s.fullscreen,
+            bindings: s.bindings,
         }
     }
 }
@@ -56,6 +61,8 @@ impl SettingsData {
         s.shadows = self.shadows;
         s.crosshair = self.crosshair;
         s.show_fps = self.show_fps;
+        s.fullscreen = self.fullscreen;
+        s.bindings = self.bindings;
     }
 }
 impl Default for SaveData {
@@ -74,7 +81,7 @@ impl SaveData {
     pub fn serialize(&self) -> String {
         let s = &self.settings;
         let c = &self.career;
-        format!(
+        let mut out = format!(
             "version=1\nsensitivity={}\nfov={}\nvolume={}\nshadows={}\ncrosshair={}\nfps={}\nweapon={}\nmode={}\nmap={}\nkills={}\ndeaths={}\nmatches={}\nwins={}\n",
             s.sensitivity,
             s.fov,
@@ -86,6 +93,8 @@ impl SaveData {
             match self.mode {
                 Mode::FreeForAll => "ffa",
                 Mode::TeamDeathmatch => "tdm",
+                Mode::CaptureTheFlag => "ctf",
+                Mode::KingOfTheHill => "koth",
             },
             match self.map {
                 Map::Sector05 => "sector05",
@@ -95,7 +104,14 @@ impl SaveData {
             c.deaths,
             c.matches,
             c.wins,
-        )
+        );
+        out.push_str(&format!("fullscreen={}\n", s.fullscreen));
+        for bind in Bind::ALL {
+            if let Some(id) = key_id(s.bindings.get(bind)) {
+                out.push_str(&format!("{}={id}\n", bind.save_key()));
+            }
+        }
+        out
     }
 
     /// Parses a save, falling back to defaults for anything missing or out of range.
@@ -134,6 +150,17 @@ impl SaveData {
                         data.settings.crosshair = v as usize;
                     }
                 }
+                "fullscreen" => {
+                    if let Ok(v) = value.parse() {
+                        data.settings.fullscreen = v;
+                    }
+                }
+                key if key.starts_with("key_") => {
+                    let bind = Bind::ALL.iter().find(|b| b.save_key() == key);
+                    if let (Some(&bind), Some(code)) = (bind, key_from_id(value)) {
+                        data.settings.bindings.set(bind, code);
+                    }
+                }
                 "fps" => {
                     if let Ok(v) = value.parse() {
                         data.settings.show_fps = v;
@@ -152,6 +179,8 @@ impl SaveData {
                 "mode" => match value {
                     "ffa" => data.mode = Mode::FreeForAll,
                     "tdm" => data.mode = Mode::TeamDeathmatch,
+                    "ctf" => data.mode = Mode::CaptureTheFlag,
+                    "koth" => data.mode = Mode::KingOfTheHill,
                     _ => {}
                 },
                 "kills" => data.career.kills = u().unwrap_or(data.career.kills),
@@ -259,9 +288,16 @@ mod tests {
                 shadows: false,
                 crosshair: 4,
                 show_fps: false,
+                fullscreen: true,
+                bindings: {
+                    let mut b = Bindings::default();
+                    b.set(Bind::Jump, KeyCode::KeyF);
+                    b.set(Bind::Forward, KeyCode::ArrowUp);
+                    b
+                },
             },
             weapon: 3,
-            mode: Mode::TeamDeathmatch,
+            mode: Mode::KingOfTheHill,
             map: Map::Skyreach,
             career: Career {
                 kills: 120,
@@ -289,7 +325,7 @@ mod tests {
     #[test]
     fn garbage_falls_back_to_defaults() {
         let parsed = SaveData::parse(
-            "fov=NaN\nmap=moon\nfps=maybe\nweapon=99\ncrosshair=-1\nmode=ctf\nkills=abc\nnonsense\n",
+            "fov=NaN\nkey_jump=Escape\nkey_nope=KeyQ\nfullscreen=7\nmap=moon\nfps=maybe\nweapon=99\ncrosshair=-1\nmode=zzz\nkills=abc\nnonsense\n",
         );
         assert_eq!(parsed, SaveData::default());
         assert_eq!(SaveData::parse(""), SaveData::default());

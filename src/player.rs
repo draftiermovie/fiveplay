@@ -1,4 +1,4 @@
-use crate::{game::*, world::ArenaCamera};
+use crate::{controls::Bind, game::*, world::ArenaCamera};
 use avian3d::prelude::*;
 use bevy::{input::mouse::AccumulatedMouseMotion, prelude::*};
 #[derive(Component)]
@@ -53,9 +53,10 @@ pub fn movement(
     }
     let dt = time.delta_secs().min(0.05);
     let (p, tr) = &mut *player;
-    let crouch = keys.pressed(KeyCode::ControlLeft);
-    let sprint = keys.pressed(KeyCode::ShiftLeft) && !mouse.pressed(MouseButton::Right);
-    if keys.just_pressed(KeyCode::ControlLeft) && sprint && p.grounded {
+    let binds = settings.bindings;
+    let crouch = binds.pressed(&keys, Bind::Crouch);
+    let sprint = binds.pressed(&keys, Bind::Sprint) && !mouse.pressed(MouseButton::Right);
+    if binds.just_pressed(&keys, Bind::Crouch) && sprint && p.grounded {
         // Launch the slide at slide speed along the current direction of travel;
         // horizontal velocity is then held (not steered) until the slide ends.
         let horizontal = Vec2::new(p.velocity.x, p.velocity.z);
@@ -75,9 +76,10 @@ pub fn movement(
         5.5
     };
     let axis = Vec3::new(
-        (keys.pressed(KeyCode::KeyD) as i32 - keys.pressed(KeyCode::KeyA) as i32) as f32,
+        (binds.pressed(&keys, Bind::Right) as i32 - binds.pressed(&keys, Bind::Left) as i32) as f32,
         0.,
-        (keys.pressed(KeyCode::KeyS) as i32 - keys.pressed(KeyCode::KeyW) as i32) as f32,
+        (binds.pressed(&keys, Bind::Back) as i32 - binds.pressed(&keys, Bind::Forward) as i32)
+            as f32,
     )
     .normalize_or_zero();
     let desired = Quat::from_rotation_y(p.yaw) * axis * speed;
@@ -102,7 +104,7 @@ pub fn movement(
     if p.grounded && p.velocity.y < 0. {
         p.velocity.y = 0.;
     }
-    if keys.just_pressed(KeyCode::Space) && p.grounded {
+    if binds.just_pressed(&keys, Bind::Jump) && p.grounded {
         p.velocity.y = 7.;
         let variant = (*jump_flip % 3) as usize;
         *jump_flip = (*jump_flip + 1) % 3;
@@ -137,7 +139,7 @@ pub fn movement(
         }
     }
     if tr.translation.y < -10. {
-        tr.translation = crate::world::player_spawn(session.map);
+        tr.translation = crate::world::player_spawn(session.map, session.mode);
         p.velocity = Vec3::ZERO;
         p.slide = 0.;
     }

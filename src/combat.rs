@@ -1,145 +1,120 @@
-use crate::{
-    game::*,
-    player::Player,
-    world::{ArenaCamera, spawn_point},
-};
-use avian3d::prelude::*;
+use crate::{game::*, world::ArenaCamera};
 use bevy::prelude::*;
+/// What a bot is currently trying to do (see `ai::bots`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Plan {
+    /// No enemy in sight: path towards the nearest one.
+    Hunt,
+    /// Enemy in sight: hold a preferred range and strafe while shooting.
+    Fight,
+    /// Badly hurt: hide somewhere the threat cannot see and heal.
+    Cover,
+}
 #[derive(Component)]
 pub struct Bot {
     pub health: f32,
     pub cooldown: f32,
     pub respawn: f32,
+    /// `score::RED` (even index) or `score::BLUE` (odd index).
     pub team: usize,
     pub index: usize,
+    pub plan: Plan,
+    /// Combatant id being engaged (see `score`).
+    pub target: Option<usize>,
+    /// Who last damaged this bot; preferred as a target.
+    pub attacker: Option<usize>,
+    pub think: f32,
+    pub path: Vec<Vec3>,
+    pub repath: f32,
+    /// Strafe direction (-1 or 1) and time until it may change.
+    pub strafe: f32,
+    pub strafe_time: f32,
+    /// Preferred fighting distance; differs per bot.
+    pub range: f32,
+    pub hurt_time: f32,
+    pub cover: Option<Vec3>,
+    pub cover_time: f32,
+    /// Raised spot (hill, perch) the bot is climbing to while fighting.
+    pub vantage: Option<Vec3>,
+    pub vantage_time: f32,
+    pub velocity: Vec3,
+    pub yaw: f32,
+    /// Up/down angle to the target, for the model's aim pose.
+    pub aim_pitch: f32,
+    /// Seconds of recoil left from the last shot.
+    pub kick: f32,
+}
+impl Bot {
+    pub fn new(index: usize) -> Self {
+        let mut bot = Self {
+            health: 100.,
+            cooldown: 0.,
+            respawn: 0.,
+            team: index % 2,
+            index,
+            plan: Plan::Hunt,
+            target: None,
+            attacker: None,
+            think: 0.,
+            path: Vec::new(),
+            repath: 0.,
+            strafe: if index % 2 == 0 { 1. } else { -1. },
+            strafe_time: 0.,
+            range: 8. + (index as f32 * 3.7) % 10.,
+            hurt_time: 99.,
+            cover: None,
+            cover_time: 0.,
+            vantage: None,
+            vantage_time: 0.,
+            velocity: Vec3::ZERO,
+            yaw: 0.,
+            aim_pitch: 0.,
+            kick: 0.,
+        };
+        bot.revive();
+        bot
+    }
+    /// Combatant id used by the scoreboard.
+    pub fn id(&self) -> usize {
+        self.index + 1
+    }
+    /// Full health and a fresh plan, for match start and respawn.
+    pub fn revive(&mut self) {
+        self.health = 100.;
+        self.respawn = 0.;
+        self.plan = Plan::Hunt;
+        self.target = None;
+        self.attacker = None;
+        self.think = self.index as f32 * 0.05;
+        self.path.clear();
+        self.repath = 0.;
+        self.hurt_time = 99.;
+        self.cover = None;
+        self.cover_time = 0.;
+        self.vantage = None;
+        self.velocity = Vec3::ZERO;
+        self.cooldown = 1. + self.index as f32 * 0.15;
+    }
 }
 #[derive(Component)]
 pub struct Effect(pub f32);
-/// A bot's visual for one map; only the loaded map's skin is shown.
-#[derive(Component)]
-pub struct BotSkin(pub Map);
-/// Shows each bot's skin for the loaded map and bobs the flying drones.
-pub fn skins(
-    time: Res<Time>,
-    loaded: Res<crate::world::LoadedMap>,
-    bots: Query<(&Bot, &Children)>,
-    mut skins: Query<(&BotSkin, &mut Visibility, &mut Transform)>,
-) {
-    for (bot, children) in &bots {
-        for child in children.iter() {
-            let Ok((skin, mut visibility, mut transform)) = skins.get_mut(child) else {
-                continue;
-            };
-            let shown = loaded.0 == Some(skin.0);
-            let target = if shown {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            };
-            if *visibility != target {
-                *visibility = target;
-            }
-            if shown && skin.0 == Map::Skyreach {
-                transform.translation.y =
-                    (time.elapsed_secs() * 2.6 + bot.index as f32 * 1.3).sin() * 0.09;
-            }
-        }
-    }
-}
-pub fn bots(
-    mut commands: Commands,
-    time: Res<Time>,
-    settings: Res<Settings>,
-    mut session: ResMut<Session>,
-    mut career: ResMut<crate::save::Career>,
-    mut player: Single<(&mut Player, &Transform)>,
-    mut bots: Query<(&mut Bot, &mut Transform, &mut Visibility), Without<Player>>,
-    spatial: SpatialQuery,
-) {
-    if session.screen != Screen::Playing {
-        return;
-    }
-    let dt = time.delta_secs().min(0.05);
-    let target = player.1.translation;
-    for (mut bot, mut tr, mut visible) in &mut bots {
-        if bot.health <= 0. {
-            bot.respawn -= dt;
-            *visible = Visibility::Hidden;
-            if bot.respawn <= 0. {
-                bot.health = 100.;
-                tr.translation = spawn_point(bot.index);
-                *visible = Visibility::Inherited;
-            }
-            continue;
-        }
-        let ally = session.mode == Mode::TeamDeathmatch && bot.team == 1;
-        let offset = target - tr.translation;
-        let flat = Vec3::new(offset.x, 0., offset.z);
-        let distance = flat.length();
-        let direction = flat.normalize_or_zero();
-        // Hostiles close in on the player; allies follow at a short distance.
-        if distance > 7. {
-            let move_dir = direction;
-            // Probe low enough to see 1 m platforms as well as walls.
-            let origin = tr.translation + Vec3::Y * 0.5;
-            let clear = spatial
-                .cast_ray(
-                    origin,
-                    Dir3::new(move_dir).unwrap_or(Dir3::X),
-                    1.2,
-                    true,
-                    &SpatialQueryFilter::default(),
-                )
-                .is_none();
-            if clear {
-                tr.translation += move_dir * dt * 2.8;
-            } else {
-                tr.translation += Vec3::new(-move_dir.z, 0., move_dir.x) * dt * 2.;
-            }
-            tr.translation.x = tr.translation.x.clamp(-28., 28.);
-            tr.translation.z = tr.translation.z.clamp(-28., 28.);
-        }
-        if distance > 0.1 {
-            let pos = tr.translation;
-            tr.look_at(Vec3::new(target.x, pos.y, target.z), Vec3::Y);
-        }
-        bot.cooldown -= dt;
-        if !ally && distance < 35. && bot.cooldown <= 0. {
-            bot.cooldown = 0.8 + bot.index as f32 * 0.13;
-            let gain = (1. - distance / 45.).max(0.2);
-            crate::audio::play(&mut commands, &settings, gain, |bank| {
-                bank.enemy_attack.clone()
-            });
-            let origin = tr.translation + Vec3::Y * 1.5;
-            let delta = target + Vec3::Y * 0.4 - origin;
-            if let Ok(dir) = Dir3::new(delta) {
-                let blocked = spatial
-                    .cast_ray(
-                        origin,
-                        dir,
-                        delta.length(),
-                        true,
-                        &SpatialQueryFilter::default(),
-                    )
-                    .is_some();
-                if !blocked {
-                    player.0.health -= 7.;
-                    player.0.hurt_time = 0.;
-                    session.damage = 0.45;
-                    // Angle of the attacker as seen from the player (offset points
-                    // from the bot to the player, so it is negated here).
-                    session.damage_angle = (-offset.x).atan2(-offset.z) - player.0.yaw;
-                    if player.0.health <= 0. {
-                        session.deaths += 1;
-                        career.deaths += 1;
-                        session.red += 1;
-                        session.screen = Screen::Dead;
-                        break;
-                    }
-                }
-            }
-        }
-    }
+/// Hit areas of the soldier model, measured from the feet:
+/// (height, radius, damage multiplier). The first is the head.
+pub const HITBOXES: [(f32, f32, f32); 4] = [
+    (1.7, 0.17, 2.5),
+    (1.3, 0.3, 1.),
+    (0.92, 0.26, 1.),
+    (0.45, 0.24, 0.75),
+];
+/// Nearest hit on a soldier standing at `feet`: (distance, multiplier, headshot).
+pub fn hit_soldier(origin: Vec3, dir: Vec3, feet: Vec3) -> Option<(f32, f32, bool)> {
+    HITBOXES
+        .iter()
+        .enumerate()
+        .filter_map(|(k, &(y, r, mult))| {
+            ray_sphere(origin, dir, feet + Vec3::Y * y, r).map(|d| (d, mult, k == 0))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
 }
 pub fn effects(
     mut commands: Commands,
