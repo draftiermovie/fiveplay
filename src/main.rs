@@ -3,6 +3,7 @@ mod audio;
 mod combat;
 mod controls;
 mod game;
+mod gamepad;
 mod models;
 mod nameplates;
 mod objective;
@@ -78,21 +79,32 @@ fn main() {
     .init_resource::<score::Scoreboard>()
     .init_resource::<objective::Objective>()
     .init_resource::<spectate::Spectate>()
+    .init_resource::<gamepad::Pad>()
+    .init_resource::<gamepad::PadFocus>()
     .add_systems(
         Startup,
-        (world::setup, ui::setup, objective::setup, soldier::setup).chain(),
+        (
+            world::setup,
+            ui::setup,
+            objective::setup,
+            soldier::setup,
+            gamepad::setup,
+        )
+            .chain(),
     )
     .add_systems(
         Update,
         // Two chained groups (a single tuple is capped at 20 systems), run in order.
         (
             (
+                gamepad::read,
                 models::resolve,
                 world::switch_map,
                 ai::build_nav,
                 world::build,
                 ui::capture_key,
                 game::input,
+                gamepad::menu,
                 ui::interact,
                 ui::hover,
                 player::look,
@@ -112,6 +124,7 @@ fn main() {
                 nameplates::update,
                 ui::refresh,
                 ui::fps,
+                gamepad::toast,
                 ui::standings,
                 ui::sliders,
                 objective::visuals,

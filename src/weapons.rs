@@ -156,7 +156,13 @@ pub fn update(
     mut bots: Query<(&mut Bot, &Transform), Without<ArenaCamera>>,
     spatial: SpatialQuery,
     // Grouped: Bevy systems accept at most 16 parameters.
-    (palette, models, soldiers): (Res<Palette>, Res<Models>, Res<crate::soldier::SoldierKit>),
+    (palette, models, soldiers, pad, mut rumble): (
+        Res<Palette>,
+        Res<Models>,
+        Res<crate::soldier::SoldierKit>,
+        Res<crate::gamepad::Pad>,
+        MessageWriter<bevy::input::gamepad::GamepadRumbleRequest>,
+    ),
     mut meshes: ResMut<Assets<Mesh>>,
     mut guns: Query<&mut Transform, (With<ViewGun>, Without<ArenaCamera>, Without<Bot>)>,
 ) {
@@ -212,9 +218,16 @@ pub fn update(
             arsenal.reload = 0.;
         }
     }
-    if wheel.delta.y != 0. {
-        arsenal.selected = (arsenal.selected as i32 - if wheel.delta.y > 0. { 1 } else { -1 })
-            .rem_euclid(5) as usize;
+    // Mouse wheel, or the controller's bumpers / Y / D-pad.
+    let step = if wheel.delta.y > 0. || pad.prev_weapon {
+        -1
+    } else if wheel.delta.y < 0. || pad.next_weapon {
+        1
+    } else {
+        0
+    };
+    if step != 0 {
+        arsenal.selected = (arsenal.selected as i32 + step).rem_euclid(5) as usize;
         arsenal.reload = 0.;
     }
     let index = arsenal.selected;
@@ -232,7 +245,7 @@ pub fn update(
     }
     for mut gun in &mut guns {
         gun.translation.y = gun.translation.y.lerp(
-            if mouse.pressed(MouseButton::Right) {
+            if mouse.pressed(MouseButton::Right) || pad.aim {
                 -0.18
             } else {
                 -0.25
@@ -240,7 +253,7 @@ pub fn update(
             0.2,
         );
         gun.translation.x = gun.translation.x.lerp(
-            if mouse.pressed(MouseButton::Right) {
+            if mouse.pressed(MouseButton::Right) || pad.aim {
                 0.0
             } else {
                 0.28
@@ -248,9 +261,10 @@ pub fn update(
             0.2,
         );
     }
-    if settings
+    if (settings
         .bindings
         .just_pressed(&keys, crate::controls::Bind::Reload)
+        || pad.reload)
         && arsenal.ammo[index] < weapon.magazine
         && arsenal.reserve[index] > 0
     {
@@ -259,9 +273,9 @@ pub fn update(
     }
     let automatic = index < 2;
     let shoot = if automatic {
-        mouse.pressed(MouseButton::Left)
+        mouse.pressed(MouseButton::Left) || pad.fire
     } else {
-        mouse.just_pressed(MouseButton::Left)
+        mouse.just_pressed(MouseButton::Left) || pad.fire_just
     };
     if shoot && arsenal.ammo[index] == 0 && arsenal.reserve[index] > 0 {
         // Pulling the trigger on an empty magazine starts a reload.
@@ -276,7 +290,7 @@ pub fn update(
     crate::audio::shot(&mut commands, &settings, index);
     let origin = camera.1.translation;
     let base = camera.1.rotation;
-    let ads = if mouse.pressed(MouseButton::Right) {
+    let ads = if mouse.pressed(MouseButton::Right) || pad.aim {
         0.25
     } else {
         1.
@@ -371,6 +385,8 @@ pub fn update(
         Effect(0.045),
     ));
     player.pitch = (player.pitch + weapon.recoil).min(1.5);
+    // A short kick on the controller, stronger for heavy weapons.
+    crate::gamepad::rumble(&pad, &mut rumble, weapon.recoil * 6., 0.25, 0.07);
 }
 #[cfg(test)]
 mod tests {

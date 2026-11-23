@@ -382,9 +382,11 @@ pub fn bots(
     spatial: SpatialQuery,
     (palette, mut meshes): (Res<Palette>, ResMut<Assets<Mesh>>),
     mut seed: Local<u64>,
-    (objective, mut spectate): (
+    (objective, mut spectate, pad, mut rumble): (
         Res<crate::objective::Objective>,
         ResMut<crate::spectate::Spectate>,
+        Res<crate::gamepad::Pad>,
+        MessageWriter<bevy::input::gamepad::GamepadRumbleRequest>,
     ),
 ) {
     // Bots keep fighting while the player is dead and spectating.
@@ -726,6 +728,7 @@ pub fn bots(
             }
             player.0.health -= DAMAGE;
             player.0.hurt_time = 0.;
+            crate::gamepad::rumble(&pad, &mut rumble, 0.6, 0.4, 0.15);
             session.damage = 0.45;
             let from = shot.from - center;
             session.damage_angle = from.x.atan2(from.z) - player.0.yaw;

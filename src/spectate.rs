@@ -9,7 +9,7 @@ use crate::{
     world::ArenaCamera,
 };
 use avian3d::prelude::*;
-use bevy::prelude::*;
+use bevy::{input::gamepad::GamepadButton, prelude::*};
 
 /// Seconds the camera stays on the killer before spectating starts.
 pub const KILL_CAM: f32 = 2.5;
@@ -52,28 +52,38 @@ impl Spectate {
             None => String::new(),
         }
     }
-    pub fn focus_line(&self, settings: &Settings) -> String {
+    pub fn focus_line(&self, settings: &Settings, pad: &crate::gamepad::Pad) -> String {
         if self.kill_cam() {
             return "KILL CAM".into();
         }
         let b = &settings.bindings;
         match self.focus {
-            Some(f) => format!(
-                "WATCHING  {}  ({:.0} HP)   /   {}-{} SWITCH",
-                score::name(f),
-                self.focus_hp.max(0.),
-                b.name(Bind::Left),
-                b.name(Bind::Right)
-            ),
+            Some(f) => {
+                let (prev, next) = if pad.active {
+                    (
+                        pad.label(GamepadButton::LeftTrigger),
+                        pad.label(GamepadButton::RightTrigger),
+                    )
+                } else {
+                    (b.name(Bind::Left), b.name(Bind::Right))
+                };
+                format!(
+                    "WATCHING  {}  ({:.0} HP)   /   {prev}-{next} SWITCH",
+                    score::name(f),
+                    self.focus_hp.max(0.),
+                )
+            }
             None => "NO ONE LEFT TO SPECTATE".into(),
         }
     }
-    pub fn redeploy_line(&self, settings: &Settings) -> String {
+    pub fn redeploy_line(&self, settings: &Settings, pad: &crate::gamepad::Pad) -> String {
         if self.ready() {
-            format!(
-                "READY   /   PRESS {} OR CLICK REDEPLOY",
+            let key = if pad.active {
+                pad.label(GamepadButton::South)
+            } else {
                 settings.bindings.name(Bind::Jump)
-            )
+            };
+            format!("READY   /   PRESS {key} OR CLICK REDEPLOY")
         } else {
             format!("REDEPLOY IN {:.1}s", REDEPLOY - self.timer)
         }
@@ -87,6 +97,7 @@ pub fn camera(
     settings: Res<Settings>,
     keys: Res<ButtonInput<KeyCode>>,
     mut spec: ResMut<Spectate>,
+    pad: Res<crate::gamepad::Pad>,
     mut actions: ResMut<crate::ui::Actions>,
     bots: Query<(&Bot, &Transform)>,
     mut camera: Single<(&mut Transform, &mut Projection), (With<ArenaCamera>, Without<Bot>)>,
@@ -135,10 +146,10 @@ pub fn camera(
     });
     let binds = settings.bindings;
     let mut step = std::mem::take(&mut spec.cycle);
-    if binds.just_pressed(&keys, Bind::Left) {
+    if binds.just_pressed(&keys, Bind::Left) || pad.prev_weapon {
         step -= 1;
     }
-    if binds.just_pressed(&keys, Bind::Right) {
+    if binds.just_pressed(&keys, Bind::Right) || pad.next_weapon {
         step += 1;
     }
     let current = spec
@@ -179,7 +190,7 @@ pub fn camera(
     if let Projection::Perspective(p) = &mut **projection {
         p.fov = p.fov.lerp(settings.fov.to_radians(), ease(4.));
     }
-    if spec.ready() && binds.just_pressed(&keys, Bind::Jump) {
+    if spec.ready() && (binds.just_pressed(&keys, Bind::Jump) || pad.jump) {
         actions.0.push(crate::ui::Action::Respawn);
     }
 }
@@ -199,7 +210,8 @@ mod tests {
         s.timer = REDEPLOY;
         assert!(s.ready() && !s.kill_cam());
         let settings = Settings::default();
-        assert!(s.redeploy_line(&settings).starts_with("READY"));
-        assert!(s.focus_line(&settings).contains("SENTINEL 03"));
+        let pad = crate::gamepad::Pad::default();
+        assert!(s.redeploy_line(&settings, &pad).starts_with("READY"));
+        assert!(s.focus_line(&settings, &pad).contains("SENTINEL 03"));
     }
 }

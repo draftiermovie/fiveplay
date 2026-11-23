@@ -33,11 +33,13 @@ pub struct ButtonTint {
 }
 pub fn hover(
     time: Res<Time>,
-    mut buttons: Query<(&Hovered, &mut ImageNode, &ButtonTint), With<Button>>,
+    focus: Res<crate::gamepad::PadFocus>,
+    mut buttons: Query<(Entity, &Hovered, &mut ImageNode, &ButtonTint), With<Button>>,
 ) {
     let blend = 1.0 - (-18.0 * time.delta_secs()).exp();
-    for (hovered, mut image, tint) in &mut buttons {
-        let target = if hovered.get() { tint.hover } else { tint.base };
+    for (entity, hovered, mut image, tint) in &mut buttons {
+        let lit = hovered.get() || focus.0 == Some(entity);
+        let target = if lit { tint.hover } else { tint.base };
         image.color = image.color.mix(&target, blend);
     }
 }
@@ -65,6 +67,7 @@ pub enum Action {
     Crosshair,
     Resolution,
     Fullscreen,
+    PadInvert,
     Controls,
     Rebind(Bind),
     PrevTarget,
@@ -447,6 +450,7 @@ fn menu_screen(
     career: &Career,
     board: &Scoreboard,
     rebind: &Rebind,
+    pad: &crate::gamepad::Pad,
 ) {
     let screen = session.screen;
     let title = screen_title(screen, session, board);
@@ -588,6 +592,12 @@ fn menu_screen(
                             &format!("FPS COUNTER / {}", on(settings.show_fps)),
                             Action::Fps,
                         );
+                        button(
+                            p,
+                            ui,
+                            &format!("INVERT Y (CONTROLLER) / {}", on(settings.pad_invert)),
+                            Action::PadInvert,
+                        );
                         button(p, ui, "RESOLUTION / 1080p-4K", Action::Resolution);
                         button(p, ui, "CONTROLS", Action::Controls);
                         primary_button(
@@ -604,28 +614,55 @@ fn menu_screen(
                 });
             }
             Screen::Controls => {
-                column_panel(p, &ui.panel_blue, 32., 38., |p| {
-                    text(
-                        p,
-                        "CLICK AN ACTION, THEN PRESS A KEY  /  ESC CANCELS",
-                        12.,
-                        SKY,
-                    );
-                    for bind in Bind::ALL {
-                        let key = if rebind.0 == Some(bind) {
-                            "PRESS A KEY..."
-                        } else {
-                            settings.bindings.name(bind)
-                        };
-                        button(
+                p.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(16),
+                    align_items: AlignItems::Start,
+                    flex_wrap: FlexWrap::Wrap,
+                    row_gap: px(16),
+                    ..default()
+                })
+                .with_children(|p| {
+                    column_panel(p, &ui.panel_blue, 32., 38., |p| {
+                        text(
                             p,
-                            ui,
-                            &format!("{}  /  {key}", bind.label()),
-                            Action::Rebind(bind),
+                            "CLICK AN ACTION, THEN PRESS A KEY  /  ESC CANCELS",
+                            12.,
+                            SKY,
                         );
-                    }
-                    button(p, ui, "RESET TO DEFAULTS", Action::ResetControls);
-                    primary_button(p, ui, "BACK", Action::Back);
+                        for bind in Bind::ALL {
+                            let key = if rebind.0 == Some(bind) {
+                                "PRESS A KEY..."
+                            } else {
+                                settings.bindings.name(bind)
+                            };
+                            button(
+                                p,
+                                ui,
+                                &format!("{}  /  {key}", bind.label()),
+                                Action::Rebind(bind),
+                            );
+                        }
+                        button(p, ui, "RESET TO DEFAULTS", Action::ResetControls);
+                        primary_button(p, ui, "BACK", Action::Back);
+                    });
+                    column_panel(p, &ui.panel_blue, 32., 38., |p| {
+                        text(
+                            p,
+                            &format!("CONTROLLER  /  {:?} LAYOUT", pad.style).to_uppercase(),
+                            12.,
+                            SKY,
+                        );
+                        for line in pad.style.help().replace('\n', "   /   ").split("   /   ") {
+                            text(p, line, 15., Color::WHITE);
+                        }
+                        text(
+                            p,
+                            "MENUS: D-PAD OR STICK TO MOVE, CONFIRM / BACK WITH THE FACE BUTTONS",
+                            11.,
+                            MUTED,
+                        );
+                    });
                 });
             }
             Screen::Profile => {
@@ -709,7 +746,7 @@ fn menu_screen(
             Screen::Playing => {}
         }
     });
-    text(root, &help(settings), 12., MUTED);
+    label(root, &help(settings), 12., MUTED, 10);
 }
 /// The kill feed, top right below the FPS counter.
 fn kill_feed(root: &mut ChildSpawnerCommands) {
@@ -923,7 +960,7 @@ fn hud(
             align_items: AlignItems::End,
             ..default()
         })
-        .with_children(|p| text(p, &help(settings), 11., MUTED));
+        .with_children(|p| label(p, &help(settings), 11., MUTED, 10));
     });
 }
 pub fn setup(mut commands: Commands, assets: Res<AssetServer>) {
@@ -981,11 +1018,12 @@ pub fn refresh(
     mut labels: Query<(&Label, &mut Text)>,
     mut bars: Query<&mut Node, With<LoadingBar>>,
     mut reticles: Query<(&mut ImageNode, &mut UiTransform), With<Crosshair>>,
-    (board, rebind, objective, spectate): (
+    (board, rebind, objective, spectate, pad): (
         Res<Scoreboard>,
         Res<Rebind>,
         Res<crate::objective::Objective>,
         Res<crate::spectate::Spectate>,
+        Res<crate::gamepad::Pad>,
     ),
 ) {
     let screen = session.screen;
@@ -1070,8 +1108,15 @@ pub fn refresh(
                     }
                 }
                 7 => spectate.killer_line(),
-                8 => spectate.focus_line(&settings),
-                9 => spectate.redeploy_line(&settings),
+                8 => spectate.focus_line(&settings, &pad),
+                9 => spectate.redeploy_line(&settings, &pad),
+                10 => {
+                    if pad.active {
+                        pad.style.help()
+                    } else {
+                        help(&settings)
+                    }
+                }
                 _ => continue,
             };
             if **text != value {
@@ -1139,6 +1184,7 @@ pub fn refresh(
                     &career,
                     &board,
                     &rebind,
+                    &pad,
                 );
             }
         });
@@ -1271,6 +1317,10 @@ pub fn interact(
                     (1920, 1080)
                 };
                 window.resolution.set_physical_resolution(w, h);
+            }
+            Action::PadInvert => {
+                settings.pad_invert = !settings.pad_invert;
+                state.0 = Screen::Loading;
             }
             Action::Fps => {
                 settings.show_fps = !settings.show_fps;
@@ -1409,6 +1459,7 @@ fn standings_table(p: &mut ChildSpawnerCommands) {
 pub fn standings(
     session: Res<Session>,
     settings: Res<Settings>,
+    pad: Res<crate::gamepad::Pad>,
     board: Res<Scoreboard>,
     keys: Res<ButtonInput<KeyCode>>,
     mut cells: Query<(&ScoreCell, &mut Text, &mut TextColor), Without<KillFeed>>,
@@ -1444,7 +1495,7 @@ pub fn standings(
         }
     }
     let show = matches!(session.screen, Screen::Playing | Screen::Dead)
-        && settings.bindings.pressed(&keys, Bind::Scoreboard);
+        && (settings.bindings.pressed(&keys, Bind::Scoreboard) || pad.scoreboard);
     for mut visibility in &mut panels {
         let target = if show {
             Visibility::Inherited
@@ -1484,12 +1535,20 @@ pub fn capture_key(
     mut settings: ResMut<Settings>,
     mut state: ResMut<UiState>,
     session: Res<Session>,
+    mut pad: ResMut<crate::gamepad::Pad>,
 ) {
     let Some(bind) = rebind.0 else {
         return;
     };
     if session.screen != Screen::Controls {
         rebind.0 = None;
+        return;
+    }
+    if pad.back {
+        // Consume B so it does not also leave the screen.
+        pad.back = false;
+        rebind.0 = None;
+        state.0 = Screen::Loading;
         return;
     }
     let Some(&key) = keys.get_just_pressed().next() else {
@@ -1512,17 +1571,24 @@ pub fn capture_key(
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 pub enum SliderKind {
     Sensitivity,
+    PadSensitivity,
     Fov,
     Volume,
 }
 impl SliderKind {
-    const ALL: [SliderKind; 3] = [SliderKind::Sensitivity, SliderKind::Fov, SliderKind::Volume];
+    const ALL: [SliderKind; 4] = [
+        SliderKind::Sensitivity,
+        SliderKind::PadSensitivity,
+        SliderKind::Fov,
+        SliderKind::Volume,
+    ];
     /// (min, max, step, decimal places) in display units.
     fn range(self) -> (f32, f32, f32, i32) {
         match self {
             SliderKind::Sensitivity => (0.5, 10., 0.1, 1),
             SliderKind::Fov => (60., 120., 1., 0),
             SliderKind::Volume => (0., 100., 1., 0),
+            SliderKind::PadSensitivity => (0.2, 3., 0.1, 1),
         }
     }
     fn get(self, s: &Settings) -> f32 {
@@ -1530,6 +1596,7 @@ impl SliderKind {
             SliderKind::Sensitivity => s.sensitivity * 1000.,
             SliderKind::Fov => s.fov,
             SliderKind::Volume => s.volume * 100.,
+            SliderKind::PadSensitivity => s.pad_sensitivity,
         }
     }
     fn set(self, s: &mut Settings, v: f32) {
@@ -1537,6 +1604,7 @@ impl SliderKind {
             SliderKind::Sensitivity => s.sensitivity = v / 1000.,
             SliderKind::Fov => s.fov = v,
             SliderKind::Volume => s.volume = v / 100.,
+            SliderKind::PadSensitivity => s.pad_sensitivity = v,
         }
     }
     fn caption(self, s: &Settings) -> String {
@@ -1545,6 +1613,7 @@ impl SliderKind {
             SliderKind::Sensitivity => format!("SENSITIVITY   {v:.1}"),
             SliderKind::Fov => format!("FIELD OF VIEW   {v:.0} DEG"),
             SliderKind::Volume => format!("AUDIO   {v:.0}%"),
+            SliderKind::PadSensitivity => format!("CONTROLLER LOOK   {v:.1}"),
         }
     }
 }
@@ -1647,12 +1716,14 @@ pub fn slider_changed(
 /// Moves each knob to its value and keeps the captions current.
 pub fn sliders(
     settings: Res<Settings>,
-    sliders: Query<(&SliderValue, &SliderRange, &Hovered, &Children), With<SliderKind>>,
+    focus: Res<crate::gamepad::PadFocus>,
+    sliders: Query<(Entity, &SliderValue, &SliderRange, &Hovered, &Children), With<SliderKind>>,
     travel: Query<&Children, Without<SliderKind>>,
     mut knobs: Query<(&mut Node, &mut BackgroundColor), With<SliderKnob>>,
     mut captions: Query<(&SliderCaption, &mut Text)>,
 ) {
-    for (value, range, hovered, children) in &sliders {
+    for (entity, value, range, hovered, children) in &sliders {
+        let lit = hovered.get() || focus.0 == Some(entity);
         for child in children.iter() {
             let Ok(grandchildren) = travel.get(child) else {
                 continue;
@@ -1660,7 +1731,7 @@ pub fn sliders(
             for knob in grandchildren.iter() {
                 if let Ok((mut node, mut color)) = knobs.get_mut(knob) {
                     node.left = percent(range.thumb_position(value.0) * 100.);
-                    color.0 = if hovered.get() { Color::WHITE } else { SKY };
+                    color.0 = if lit { Color::WHITE } else { SKY };
                 }
             }
         }

@@ -24,17 +24,44 @@ impl Default for Player {
         }
     }
 }
+/// Radians per second at full right-stick deflection and sensitivity 1.
+const PAD_TURN: f32 = 3.;
 pub fn look(
+    time: Res<Time>,
     mouse: Res<AccumulatedMouseMotion>,
     settings: Res<Settings>,
     session: Res<Session>,
+    pad: Res<crate::gamepad::Pad>,
     mut player: Single<&mut Player>,
+    camera: Single<&Transform, With<ArenaCamera>>,
+    bots: Query<(&crate::combat::Bot, &Transform), Without<ArenaCamera>>,
 ) {
     if session.screen != Screen::Playing {
         return;
     }
     player.yaw -= mouse.delta.x * settings.sensitivity;
     player.pitch = (player.pitch - mouse.delta.y * settings.sensitivity).clamp(-1.5, 1.5);
+    if pad.look == Vec2::ZERO {
+        return;
+    }
+    // Controller: stick rate, halved while aiming, with light aim assist
+    // (slower turning while the crosshair is over an enemy).
+    let forward = camera.forward();
+    let over_enemy = bots.iter().any(|(bot, tr)| {
+        bot.health > 0. && crate::score::enemies(session.mode, crate::score::PLAYER, bot.id()) && {
+            let to = tr.translation + Vec3::Y * 1.2 - camera.translation;
+            let d = to.length();
+            d > 0.5 && d < 60. && forward.dot(to / d) > (0.7 / d).atan().cos()
+        }
+    });
+    let speed = PAD_TURN
+        * settings.pad_sensitivity
+        * if pad.aim { 0.5 } else { 1. }
+        * if over_enemy { 0.55 } else { 1. }
+        * time.delta_secs();
+    let invert = if settings.pad_invert { -1. } else { 1. };
+    player.yaw -= pad.look.x * speed;
+    player.pitch = (player.pitch + pad.look.y * speed * invert).clamp(-1.5, 1.5);
 }
 pub fn movement(
     time: Res<Time>,
@@ -47,6 +74,7 @@ pub fn movement(
     mut player: Single<(&mut Player, &mut Transform), Without<ArenaCamera>>,
     mut camera: Single<(&mut Transform, &mut Projection), With<ArenaCamera>>,
     mut jump_flip: Local<u8>,
+    pad: Res<crate::gamepad::Pad>,
 ) {
     if session.screen != Screen::Playing {
         return;
@@ -54,9 +82,10 @@ pub fn movement(
     let dt = time.delta_secs().min(0.05);
     let (p, tr) = &mut *player;
     let binds = settings.bindings;
-    let crouch = binds.pressed(&keys, Bind::Crouch);
-    let sprint = binds.pressed(&keys, Bind::Sprint) && !mouse.pressed(MouseButton::Right);
-    if binds.just_pressed(&keys, Bind::Crouch) && sprint && p.grounded {
+    let aiming = mouse.pressed(MouseButton::Right) || pad.aim;
+    let crouch = binds.pressed(&keys, Bind::Crouch) || pad.crouch;
+    let sprint = (binds.pressed(&keys, Bind::Sprint) || pad.sprint) && !aiming;
+    if (binds.just_pressed(&keys, Bind::Crouch) || pad.crouch_just) && sprint && p.grounded {
         // Launch the slide at slide speed along the current direction of travel;
         // horizontal velocity is then held (not steered) until the slide ends.
         let horizontal = Vec2::new(p.velocity.x, p.velocity.z);
@@ -81,7 +110,10 @@ pub fn movement(
         (binds.pressed(&keys, Bind::Back) as i32 - binds.pressed(&keys, Bind::Forward) as i32)
             as f32,
     )
-    .normalize_or_zero();
+    .normalize_or_zero()
+    // The left stick adds analogue movement (half-tilt walks slower).
+    + Vec3::new(pad.moving.x, 0., -pad.moving.y);
+    let axis = axis.clamp_length_max(1.);
     let desired = Quat::from_rotation_y(p.yaw) * axis * speed;
     let blend = 1. - (-14. * dt).exp();
     if p.slide <= 0. {
@@ -104,7 +136,7 @@ pub fn movement(
     if p.grounded && p.velocity.y < 0. {
         p.velocity.y = 0.;
     }
-    if binds.just_pressed(&keys, Bind::Jump) && p.grounded {
+    if (binds.just_pressed(&keys, Bind::Jump) || pad.jump) && p.grounded {
         p.velocity.y = 7.;
         let variant = (*jump_flip % 3) as usize;
         *jump_flip = (*jump_flip + 1) % 3;
@@ -157,7 +189,7 @@ pub fn movement(
         if p.slide > 0. { -0.06 } else { 0. },
     );
     if let Projection::Perspective(proj) = &mut *camera.1 {
-        let fov = if mouse.pressed(MouseButton::Right) {
+        let fov = if aiming {
             settings.fov * 0.65
         } else {
             settings.fov

@@ -38,6 +38,8 @@ pub struct SettingsData {
     pub show_fps: bool,
     pub fullscreen: bool,
     pub bindings: Bindings,
+    pub pad_sensitivity: f32,
+    pub pad_invert: bool,
 }
 impl From<&Settings> for SettingsData {
     fn from(s: &Settings) -> Self {
@@ -50,6 +52,8 @@ impl From<&Settings> for SettingsData {
             show_fps: s.show_fps,
             fullscreen: s.fullscreen,
             bindings: s.bindings,
+            pad_sensitivity: s.pad_sensitivity,
+            pad_invert: s.pad_invert,
         }
     }
 }
@@ -63,6 +67,8 @@ impl SettingsData {
         s.show_fps = self.show_fps;
         s.fullscreen = self.fullscreen;
         s.bindings = self.bindings;
+        s.pad_sensitivity = self.pad_sensitivity;
+        s.pad_invert = self.pad_invert;
     }
 }
 impl Default for SaveData {
@@ -106,6 +112,10 @@ impl SaveData {
             c.wins,
         );
         out.push_str(&format!("fullscreen={}\n", s.fullscreen));
+        out.push_str(&format!(
+            "pad_sensitivity={}\npad_invert={}\n",
+            s.pad_sensitivity, s.pad_invert
+        ));
         for bind in Bind::ALL {
             if let Some(id) = key_id(s.bindings.get(bind)) {
                 out.push_str(&format!("{}={id}\n", bind.save_key()));
@@ -148,6 +158,16 @@ impl SaveData {
                 "crosshair" => {
                     if let Some(v) = u().filter(|&v| (v as usize) < CROSSHAIRS.len()) {
                         data.settings.crosshair = v as usize;
+                    }
+                }
+                "pad_sensitivity" => {
+                    if let Some(v) = f() {
+                        data.settings.pad_sensitivity = v.clamp(0.2, 3.);
+                    }
+                }
+                "pad_invert" => {
+                    if let Ok(v) = value.parse() {
+                        data.settings.pad_invert = v;
                     }
                 }
                 "fullscreen" => {
@@ -289,6 +309,8 @@ mod tests {
                 crosshair: 4,
                 show_fps: false,
                 fullscreen: true,
+                pad_sensitivity: 1.7,
+                pad_invert: true,
                 bindings: {
                     let mut b = Bindings::default();
                     b.set(Bind::Jump, KeyCode::KeyF);

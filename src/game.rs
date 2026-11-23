@@ -121,6 +121,9 @@ pub struct Settings {
     pub show_fps: bool,
     pub fullscreen: bool,
     pub bindings: crate::controls::Bindings,
+    /// Controller look speed multiplier and vertical inversion.
+    pub pad_sensitivity: f32,
+    pub pad_invert: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -133,6 +136,8 @@ impl Default for Settings {
             show_fps: true,
             fullscreen: false,
             bindings: default(),
+            pad_sensitivity: 1.,
+            pad_invert: false,
         }
     }
 }
@@ -144,13 +149,16 @@ pub fn input(
     options: Res<RunOptions>,
     mut career: ResMut<crate::save::Career>,
     mut board: ResMut<crate::score::Scoreboard>,
+    pad: Res<crate::gamepad::Pad>,
 ) {
     board.tick(time.delta_secs());
     session.elapsed += time.delta_secs();
     session.hit = (session.hit - time.delta_secs()).max(0.);
     session.damage = (session.damage - time.delta_secs()).max(0.);
     session.notice_time = (session.notice_time - time.delta_secs()).max(0.);
-    if keys.just_pressed(KeyCode::Escape) {
+    // Start toggles pause; B backs out of menus (it crouches while playing).
+    let back = pad.back && !matches!(session.screen, Screen::Playing | Screen::Dead);
+    if keys.just_pressed(KeyCode::Escape) || pad.pause || back {
         session.screen = match session.screen {
             Screen::Playing | Screen::Dead => {
                 session.paused_from = session.screen;

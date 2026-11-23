@@ -44,18 +44,22 @@ The script installs the system libraries Bevy needs (apt, dnf, pacman or zypper;
 
 Defaults below. Everything except mouse, weapon keys and Escape can be rebound under **Settings → Controls**: click an action, then press a key (Escape cancels; a key already in use swaps with the other action).
 
-| Action | Binding |
-| --- | --- |
-| Move | WASD |
-| Look | Mouse |
-| Sprint | Left Shift |
-| Jump | Space |
-| Crouch / sprint slide | Left Ctrl |
-| Fire / aim | Left / right mouse |
-| Reload | R |
-| Select weapon | 1–5 / wheel |
-| Scoreboard (hold) | Tab |
-| Pause / back | Escape |
+| Action | Keyboard / mouse | Xbox | PlayStation |
+| --- | --- | --- | --- |
+| Move | WASD | Left stick | Left stick |
+| Look | Mouse | Right stick | Right stick |
+| Sprint | Left Shift | LS click (toggle) | L3 (toggle) |
+| Jump | Space | A | Cross |
+| Crouch / sprint slide | Left Ctrl | B | Circle |
+| Fire / aim | Left / right mouse | RT / LT | R2 / L2 |
+| Reload | R | X | Square |
+| Select weapon | 1–5 / wheel | LB / RB / Y / D-pad | L1 / R1 / Triangle / D-pad |
+| Scoreboard (hold) | Tab | View | Share |
+| Pause / back | Escape | Menu / B | Options / Circle |
+
+### Controllers
+
+Xbox, PlayStation (DualShock 4, DualSense), Nintendo Switch Pro and most generic controllers work through Bevy's gilrs backend (Windows.Gaming.Input on Windows, evdev on Linux); just plug in or pair. The game detects the controller type and shows matching button names (Nintendo pads use their own A/B/X/Y lettering), announces connects and disconnects, and switches on-screen prompts to whichever input you used last. Menus are fully navigable: D-pad or left stick to move, A/Cross to select, B/Circle to go back, left/right to adjust sliders. Looking uses a dead zone and a quadratic response curve, halves while aiming, and has light aim assist (slower turning over an enemy). Firing and taking hits rumble the controller. Settings has a **Controller look** speed slider and **Invert Y (controller)**; the Controls screen lists the full controller layout. If a controller is not detected on Windows, Steam's controller support or DS4Windows can present it as an Xbox controller.
 
 ## Modes and bots
 
@@ -94,6 +98,7 @@ Settings has sliders for mouse sensitivity, field of view and audio volume (drag
 ## Source map
 
 - `game.rs`: session state, settings, pause and cursor capture.
+- `gamepad.rs`: controller input, button names per controller type, menu navigation, rumble and connection notices.
 - `controls.rs`: rebindable key bindings and the key names used on screen and in the save file.
 - `world.rs`: map construction and switching (Sector 05, Skyreach), static physics, lighting and menu camera.
 - `models.rs`: loads the glTF kit models, flattens them to meshes and supplies their materials.
