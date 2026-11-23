@@ -120,6 +120,7 @@ pub fn update(
     mouse: Res<ButtonInput<MouseButton>>,
     wheel: Res<bevy::input::mouse::AccumulatedMouseScroll>,
     mut session: ResMut<Session>,
+    mut career: ResMut<crate::save::Career>,
     settings: Res<Settings>,
     mut arsenal: ResMut<Arsenal>,
     mut player: Single<&mut Player>,
@@ -243,6 +244,7 @@ pub fn update(
     } else {
         1.
     };
+    let mut hurt = false;
     for _ in 0..weapon.pellets {
         let direction =
             base * Quat::from_euler(
@@ -284,6 +286,7 @@ pub fn update(
             let _ = &mut bot;
         }
         if let Some((id, head)) = victim {
+            hurt = true;
             for (mut bot, _) in &mut bots {
                 if bot.index == id {
                     bot.health -= weapon.damage * if head { 2.5 } else { 1. };
@@ -291,6 +294,7 @@ pub fn update(
                     if bot.health <= 0. {
                         bot.respawn = 3.;
                         session.kills += 1;
+                        career.kills += 1;
                         session.blue += 1;
                         session.notice = format!(
                             "{}  /  SENTINEL {:02}",
@@ -317,6 +321,11 @@ pub fn update(
             Transform::from_translation(end),
             Effect(0.12),
         ));
+    }
+    if hurt {
+        crate::audio::play(&mut commands, &settings, 0.9, |bank| {
+            bank.enemy_hurt.clone()
+        });
     }
     for mut gun in &mut guns {
         gun.translation.z = -0.5;

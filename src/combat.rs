@@ -16,8 +16,11 @@ pub struct Bot {
 #[derive(Component)]
 pub struct Effect(pub f32);
 pub fn bots(
+    mut commands: Commands,
     time: Res<Time>,
+    settings: Res<Settings>,
     mut session: ResMut<Session>,
+    mut career: ResMut<crate::save::Career>,
     mut player: Single<(&mut Player, &Transform)>,
     mut bots: Query<(&mut Bot, &mut Transform, &mut Visibility), Without<Player>>,
     spatial: SpatialQuery,
@@ -70,6 +73,10 @@ pub fn bots(
         bot.cooldown -= dt;
         if !ally && distance < 35. && bot.cooldown <= 0. {
             bot.cooldown = 0.8 + bot.index as f32 * 0.13;
+            let gain = (1. - distance / 45.).max(0.2);
+            crate::audio::play(&mut commands, &settings, gain, |bank| {
+                bank.enemy_attack.clone()
+            });
             let origin = tr.translation + Vec3::Y * 1.5;
             let delta = target + Vec3::Y * 0.4 - origin;
             if let Ok(dir) = Dir3::new(delta) {
@@ -89,6 +96,7 @@ pub fn bots(
                     session.damage_angle = offset.x.atan2(offset.z) - player.0.yaw;
                     if player.0.health <= 0. {
                         session.deaths += 1;
+                        career.deaths += 1;
                         session.red += 1;
                         session.screen = Screen::Dead;
                         break;

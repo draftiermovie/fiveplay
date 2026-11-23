@@ -1,7 +1,9 @@
 mod audio;
 mod combat;
 mod game;
+mod nameplates;
 mod player;
+mod save;
 mod ui;
 mod weapons;
 mod world;
@@ -11,6 +13,35 @@ use bevy::prelude::*;
 use game::*;
 fn main() {
     let smoke = std::env::args().any(|arg| arg == "--smoke-test");
+
+    // Bevy resolves assets relative to the executable's directory by default. When
+    // launched via `cargo run` the binary lives in `target/<profile>/`, so the
+    // default `assets/` lookup (`target/<profile>/assets`) misses the project's
+    // assets folder, audio never loads, and the loading screen never completes.
+    // Pin the asset root to the first ancestor of the executable that contains an
+    // `assets/` folder so loading works both under `cargo run` and when the
+    // executable ships next to `assets/`.
+    if std::env::var("BEVY_ASSET_ROOT").is_err() {
+        if let Some(exe_dir) = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        {
+            if let Some(root) = exe_dir.ancestors().find(|d| d.join("assets").is_dir()) {
+                unsafe {
+                    let _ = std::env::set_var("BEVY_ASSET_ROOT", root);
+                }
+            }
+        }
+    }
+
+    let saved = save::load();
+    let mut settings = Settings::default();
+    saved.settings.apply(&mut settings);
+    let mut session = Session::default();
+    session.mode = saved.mode;
+    let mut arsenal = weapons::Arsenal::default();
+    arsenal.selected = saved.weapon;
+
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
@@ -22,12 +53,13 @@ fn main() {
     }))
     .add_plugins(PhysicsPlugins::default())
     .insert_resource(ClearColor(Color::srgb(0.008, 0.015, 0.025)))
-    .init_resource::<Session>()
+    .insert_resource(session)
     .insert_resource(RunOptions { smoke_test: smoke })
-    .init_resource::<Settings>()
+    .insert_resource(settings)
+    .insert_resource(saved.career)
     .init_resource::<ui::Actions>()
     .add_observer(ui::activate)
-    .init_resource::<weapons::Arsenal>()
+    .insert_resource(arsenal)
     .init_resource::<world::BuildProgress>()
     .add_systems(Startup, (world::setup, ui::setup))
     .add_systems(
@@ -42,12 +74,16 @@ fn main() {
             weapons::update,
             combat::bots,
             combat::effects,
+            nameplates::spawn,
+            nameplates::update,
             ui::refresh,
             world::animate,
             audio::music,
+            audio::footsteps,
         )
             .chain(),
-    );
+    )
+    .add_systems(Last, save::autosave);
     if smoke {
         app.add_systems(Update, smoke_test);
     }

@@ -1,5 +1,6 @@
 use crate::{
     audio::AudioBank,
+    save::Career,
     game::*,
     player::Player,
     weapons::{Arsenal, WEAPONS},
@@ -17,16 +18,21 @@ pub fn activate(event: On<Activate>, buttons: Query<&Action>, mut actions: ResMu
         actions.0.push(*action);
     }
 }
-pub fn hover(time: Res<Time>, mut buttons: Query<(&Hovered, &mut BackgroundColor), With<Button>>) {
-    for (hovered, mut color) in &mut buttons {
-        let target = if hovered.get() {
-            Color::srgb(0.02, 0.28, 0.43)
-        } else {
-            Color::srgba(0.06, 0.09, 0.13, 0.93)
-        };
-        color.0 = color
-            .0
-            .mix(&target, 1.0 - (-18.0 * time.delta_secs()).exp());
+/// The pack's frames are light, so hover and selection are expressed as a tint
+/// on the image node instead of swapping textures.
+#[derive(Component, Clone, Copy)]
+pub struct ButtonTint {
+    base: Color,
+    hover: Color,
+}
+pub fn hover(
+    time: Res<Time>,
+    mut buttons: Query<(&Hovered, &mut ImageNode, &ButtonTint), With<Button>>,
+) {
+    let blend = 1.0 - (-18.0 * time.delta_secs()).exp();
+    for (hovered, mut image, tint) in &mut buttons {
+        let target = if hovered.get() { tint.hover } else { tint.base };
+        image.color = image.color.mix(&target, blend);
     }
 }
 #[derive(Component)]
@@ -35,6 +41,8 @@ pub struct UiRoot;
 pub struct Label(pub u8);
 #[derive(Component)]
 pub struct LoadingBar;
+#[derive(Component)]
+pub struct Crosshair;
 #[derive(Component, Clone, Copy)]
 pub enum Action {
     Play,
@@ -50,15 +58,142 @@ pub enum Action {
     Fov,
     Volume,
     Shadows,
+    Crosshair,
     Resolution,
     Weapon(usize),
 }
 #[derive(Resource)]
 pub struct UiState(pub Screen);
+/// Accent used on the dark screen background.
 const BLUE: Color = Color::srgb(0.05, 0.65, 1.);
-fn label(parent: &mut ChildSpawnerCommands, text: &str, size: f32, color: Color, tag: u8) {
+/// Brighter accent that stays readable on the pack's medium-grey panels.
+const SKY: Color = Color::srgb(0.62, 0.9, 1.);
+/// Ink for text sitting on the pack's light buttons and panels.
+const INK: Color = Color::srgb(0.05, 0.09, 0.14);
+const MUTED: Color = Color::srgb(0.52, 0.62, 0.72);
+const DANGER: Color = Color::srgb(1., 0.32, 0.24);
+const HELP: &str = "WASD MOVE   /   SHIFT SPRINT   /   CTRL SLIDE   /   SPACE JUMP\nLMB FIRE   /   RMB AIM   /   R RELOAD   /   1-5 WEAPONS   /   ESC PAUSE";
+/// Curated Kenney crosshairs, in selection order. Outline variants stay legible
+/// on both the dark arena floor and bright emissive trim.
+pub const CROSSHAIRS: [(&str, &str); 8] = [
+    ("CROSS", "ui/crosshairs/cross.png"),
+    ("CROSS + DOT", "ui/crosshairs/cross_dot.png"),
+    ("CIRCLE", "ui/crosshairs/circle_dot.png"),
+    ("TARGET", "ui/crosshairs/target.png"),
+    ("BRACKETS", "ui/crosshairs/brackets.png"),
+    ("CHEVRONS", "ui/crosshairs/chevrons.png"),
+    ("RETICLE", "ui/crosshairs/reticle.png"),
+    ("DOT", "ui/crosshairs/dot.png"),
+];
+#[derive(Resource)]
+pub struct Crosshairs {
+    pub images: Vec<Handle<Image>>,
+}
+impl Crosshairs {
+    /// Every texture the loading screen waits on.
+    pub fn handles(&self) -> impl Iterator<Item = &Handle<Image>> {
+        self.images.iter()
+    }
+}
+/// Nine-slice pieces from the Kenney adventure UI pack.
+#[derive(Resource)]
+pub struct UiAssets {
+    pub panel: Handle<Image>,
+    pub panel_dark: Handle<Image>,
+    pub panel_blue: Handle<Image>,
+    pub panel_danger: Handle<Image>,
+    pub button: Handle<Image>,
+    pub button_danger: Handle<Image>,
+    pub check_on: Handle<Image>,
+    pub check_off: Handle<Image>,
+    pub bar_track: Handle<Image>,
+    pub bar_fill: Handle<Image>,
+    pub banner: Handle<Image>,
+    pub hexagon: Handle<Image>,
+}
+impl UiAssets {
+    /// Every texture the loading screen waits on.
+    pub fn handles(&self) -> impl Iterator<Item = &Handle<Image>> {
+        [
+            &self.panel,
+            &self.panel_dark,
+            &self.panel_blue,
+            &self.panel_danger,
+            &self.button,
+            &self.button_danger,
+            &self.check_on,
+            &self.check_off,
+            &self.bar_track,
+            &self.bar_fill,
+            &self.banner,
+            &self.hexagon,
+        ]
+        .into_iter()
+    }
+}
+fn sliced_rect(image: &Handle<Image>, border: BorderRect) -> ImageNode {
+    ImageNode {
+        image: image.clone(),
+        image_mode: NodeImageMode::Sliced(TextureSlicer {
+            border,
+            ..default()
+        }),
+        ..default()
+    }
+}
+fn sliced(image: &Handle<Image>, border: f32) -> ImageNode {
+    sliced_rect(image, BorderRect::all(border))
+}
+fn panel(image: &Handle<Image>, border: f32, tint: Color, node: Node) -> impl Bundle {
+    let mut frame = sliced(image, border);
+    frame.color = tint;
+    (frame, node, UiTransform::IDENTITY)
+}
+/// The pack frames are backgrounds, and Bevy draws an `ImageNode` inside the
+/// node's content box. Padding therefore lives on a wrapper child so the frame
+/// fills the whole node instead of shrinking by the inset.
+fn column_panel(
+    parent: &mut ChildSpawnerCommands,
+    image: &Handle<Image>,
+    border: f32,
+    padding: f32,
+    children: impl FnOnce(&mut ChildSpawnerCommands),
+) {
+    parent
+        .spawn(panel(
+            image,
+            border,
+            Color::WHITE,
+            Node {
+                width: px(430),
+                max_width: percent(100),
+                ..default()
+            },
+        ))
+        .with_children(|p| {
+            p.spawn(Node {
+                width: percent(100),
+                padding: UiRect::all(px(padding)),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(10),
+                ..default()
+            })
+            .with_children(children);
+        });
+}
+fn text(parent: &mut ChildSpawnerCommands, value: &str, size: f32, color: Color) {
     parent.spawn((
-        Text::new(text),
+        Text::new(value),
+        TextFont {
+            font_size: size.into(),
+            ..default()
+        },
+        TextColor(color),
+    ));
+}
+fn label(parent: &mut ChildSpawnerCommands, value: &str, size: f32, color: Color, tag: u8) {
+    parent.spawn((
+        Text::new(value),
         TextFont {
             font_size: size.into(),
             ..default()
@@ -67,32 +202,557 @@ fn label(parent: &mut ChildSpawnerCommands, text: &str, size: f32, color: Color,
         Label(tag),
     ));
 }
-fn button(parent: &mut ChildSpawnerCommands, title: &str, action: Action) {
+fn button_with(
+    parent: &mut ChildSpawnerCommands,
+    title: &str,
+    action: Action,
+    image: &Handle<Image>,
+    base: Color,
+    hover: Color,
+    ink: Color,
+) {
+    let mut frame = sliced(image, 10.);
+    frame.color = base;
     parent
         .spawn((
             Button,
             Hovered::default(),
             action,
+            ButtonTint { base, hover },
+            frame,
             Node {
                 width: percent(100),
-                min_height: px(48),
-                padding: UiRect::axes(px(18), px(12)),
-                align_items: AlignItems::Center,
-                border_radius: BorderRadius::all(px(3)),
+                min_height: px(44),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.06, 0.09, 0.13, 0.93)),
+            UiTransform::IDENTITY,
         ))
         .with_children(|p| {
-            label(p, title, 19., Color::WHITE, 0);
+            p.spawn(Node {
+                width: percent(100),
+                padding: UiRect::axes(px(16), px(8)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            })
+            .with_children(|p| text(p, title, 17., ink));
         });
+}
+fn button(parent: &mut ChildSpawnerCommands, ui: &UiAssets, title: &str, action: Action) {
+    button_with(
+        parent,
+        title,
+        action,
+        &ui.button,
+        Color::WHITE,
+        Color::srgb(0.72, 0.9, 1.05),
+        INK,
+    );
+}
+fn primary_button(parent: &mut ChildSpawnerCommands, ui: &UiAssets, title: &str, action: Action) {
+    button_with(
+        parent,
+        title,
+        action,
+        &ui.button,
+        Color::srgb(0.72, 0.9, 1.),
+        Color::srgb(0.6, 0.85, 1.05),
+        INK,
+    );
+}
+fn danger_button(parent: &mut ChildSpawnerCommands, ui: &UiAssets, title: &str, action: Action) {
+    button_with(
+        parent,
+        title,
+        action,
+        &ui.button_danger,
+        Color::WHITE,
+        Color::srgb(1., 0.82, 0.78),
+        Color::WHITE,
+    );
+}
+fn banner_title(parent: &mut ChildSpawnerCommands, ui: &UiAssets, title: &str) {
+    parent
+        .spawn((
+            ImageNode::new(ui.banner.clone()),
+            Node {
+                width: px(430),
+                max_width: percent(100),
+                height: px(84),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            UiTransform::IDENTITY,
+        ))
+        .with_children(|p| text(p, title, 32., INK));
+}
+fn header(parent: &mut ChildSpawnerCommands, image: &Handle<Image>, title: &str) {
+    parent
+        .spawn(panel(
+            image,
+            18.,
+            Color::WHITE,
+            Node {
+                width: px(430),
+                max_width: percent(100),
+                min_height: px(52),
+                ..default()
+            },
+        ))
+        .with_children(|p| {
+            p.spawn(Node {
+                width: percent(100),
+                padding: UiRect::axes(px(22), px(12)),
+                align_items: AlignItems::Center,
+                ..default()
+            })
+            .with_children(|p| text(p, title, 20., Color::WHITE));
+        });
+}
+fn weapon_button(
+    parent: &mut ChildSpawnerCommands,
+    ui: &UiAssets,
+    title: &str,
+    selected: bool,
+    action: Action,
+) {
+    let base = if selected {
+        Color::srgb(0.72, 0.9, 1.)
+    } else {
+        Color::WHITE
+    };
+    let mut frame = sliced(&ui.button, 10.);
+    frame.color = base;
+    parent
+        .spawn((
+            Button,
+            Hovered::default(),
+            action,
+            ButtonTint {
+                base,
+                hover: Color::srgb(0.6, 0.85, 1.05),
+            },
+            frame,
+            Node {
+                width: percent(100),
+                min_height: px(42),
+                ..default()
+            },
+            UiTransform::IDENTITY,
+        ))
+        .with_children(|p| {
+            p.spawn(Node {
+                width: percent(100),
+                padding: UiRect::axes(px(12), px(6)),
+                align_items: AlignItems::Center,
+                column_gap: px(10),
+                ..default()
+            })
+            .with_children(|p| {
+                p.spawn((
+                    ImageNode::new(if selected {
+                        ui.check_on.clone()
+                    } else {
+                        ui.check_off.clone()
+                    }),
+                    Node {
+                        width: px(22),
+                        height: px(22),
+                        ..default()
+                    },
+                ));
+                text(p, title, 16., INK);
+            });
+        });
+}
+fn stat_badge(parent: &mut ChildSpawnerCommands, ui: &UiAssets, value: &str, caption: &str) {
+    parent
+        .spawn((
+            ImageNode::new(ui.hexagon.clone()),
+            Node {
+                width: px(92),
+                height: px(120),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            UiTransform::IDENTITY,
+        ))
+        .with_children(|p| {
+            text(p, value, 26., INK);
+            text(p, caption, 10., Color::srgb(0.2, 0.28, 0.36));
+        });
+}
+fn screen_title(screen: Screen, session: &Session) -> &'static str {
+    match screen {
+        Screen::Loading => "DEPLOYMENT SYSTEMS",
+        Screen::Menu => "F I V E P L A Y",
+        Screen::Loadout => "SELECT PRIMARY",
+        Screen::Settings => "OPERATIONS / SETTINGS",
+        Screen::Profile => "SERVICE RECORD",
+        Screen::Paused => "MATCH PAUSED",
+        Screen::Dead => "YOU WERE ELIMINATED",
+        Screen::Results => {
+            if session.blue >= session.red {
+                "VICTORY"
+            } else {
+                "MATCH COMPLETE"
+            }
+        }
+        Screen::Playing => "",
+    }
+}
+fn menu_screen(
+    root: &mut ChildSpawnerCommands,
+    ui: &UiAssets,
+    crosshairs: &Crosshairs,
+    settings: &Settings,
+    session: &Session,
+    arsenal: &Arsenal,
+    career: &Career,
+) {
+    let screen = session.screen;
+    root.spawn(Node {
+        flex_direction: FlexDirection::Column,
+        row_gap: px(12),
+        ..default()
+    })
+    .with_children(|p| {
+        match screen {
+            Screen::Menu => {
+                banner_title(p, ui, screen_title(screen, session));
+                text(p, "TACTICAL ARENA  /  SECTOR 05", 13., BLUE);
+            }
+            Screen::Results => banner_title(p, ui, screen_title(screen, session)),
+            Screen::Dead => header(p, &ui.panel_danger, screen_title(screen, session)),
+            _ => header(p, &ui.panel_dark, screen_title(screen, session)),
+        }
+        match screen {
+            Screen::Loading => {
+                column_panel(p, &ui.panel_blue, 32., 38., |p| {
+                    label(p, "Initializing Engine", 16., Color::WHITE, 5);
+                    let mut track_image = sliced_rect(&ui.bar_track, BorderRect::axes(8., 0.));
+                    track_image.color = Color::srgb(0.16, 0.2, 0.27);
+                    p.spawn((
+                        track_image,
+                        BackgroundColor(Color::srgb(0.16, 0.2, 0.27)),
+                        Node {
+                            width: percent(100),
+                            height: px(16),
+                            border_radius: BorderRadius::all(px(8)),
+                            ..default()
+                        },
+                        UiTransform::IDENTITY,
+                    ))
+                    .with_children(|track| {
+                        track.spawn((
+                            LoadingBar,
+                            sliced_rect(&ui.bar_fill, BorderRect::axes(8., 0.)),
+                            BackgroundColor(Color::srgb(0.36, 0.64, 0.88)),
+                            Node {
+                                width: percent(0),
+                                height: percent(100),
+                                border_radius: BorderRadius::all(px(8)),
+                                ..default()
+                            },
+                            UiTransform::IDENTITY,
+                        ));
+                    });
+                });
+            }
+            Screen::Menu => {
+                column_panel(p, &ui.panel_blue, 32., 38., |p| {
+                    text(p, "01 / READY TO DEPLOY", 13., SKY);
+                    primary_button(p, ui, "PLAY", Action::Play);
+                    let mode = if session.mode == Mode::FreeForAll {
+                        "FREE FOR ALL"
+                    } else {
+                        "TEAM DEATHMATCH"
+                    };
+                    button(p, ui, &format!("MODE / {mode}"), Action::Mode);
+                    button(p, ui, "LOADOUT", Action::Loadout);
+                    button(p, ui, "SETTINGS", Action::Settings);
+                    button(p, ui, "PROFILE", Action::Profile);
+                    danger_button(p, ui, "QUIT", Action::Quit);
+                });
+            }
+            Screen::Loadout => {
+                column_panel(p, &ui.panel_blue, 32., 38., |p| {
+                    for (i, weapon) in WEAPONS.iter().enumerate() {
+                        weapon_button(p, ui, weapon.name, i == arsenal.selected, Action::Weapon(i));
+                    }
+                    button(p, ui, "BACK", Action::Back);
+                });
+            }
+            Screen::Settings => {
+                column_panel(p, &ui.panel_blue, 32., 38., |p| {
+                    p.spawn(panel(
+                        &ui.panel,
+                        18.,
+                        Color::srgb(0.3, 0.36, 0.43),
+                        Node {
+                            width: px(88),
+                            height: px(88),
+                            align_self: AlignSelf::Center,
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            ..default()
+                        },
+                    ))
+                    .with_children(|p| {
+                        p.spawn((
+                            ImageNode::new(crosshairs.images[settings.crosshair].clone()),
+                            Node {
+                                width: px(48),
+                                height: px(48),
+                                ..default()
+                            },
+                        ));
+                    });
+                    button(
+                        p,
+                        ui,
+                        &format!("CROSSHAIR / {}", CROSSHAIRS[settings.crosshair].0),
+                        Action::Crosshair,
+                    );
+                    button(
+                        p,
+                        ui,
+                        &format!("SENSITIVITY / {:.1}", settings.sensitivity * 1000.),
+                        Action::Sensitivity,
+                    );
+                    button(
+                        p,
+                        ui,
+                        &format!("FIELD OF VIEW / {:.0} DEG", settings.fov),
+                        Action::Fov,
+                    );
+                    button(
+                        p,
+                        ui,
+                        &format!("AUDIO / {:.0}%", settings.volume * 100.),
+                        Action::Volume,
+                    );
+                    button(
+                        p,
+                        ui,
+                        &format!("SHADOWS / {}", if settings.shadows { "ON" } else { "OFF" }),
+                        Action::Shadows,
+                    );
+                    button(p, ui, "RESOLUTION / 1080p-4K", Action::Resolution);
+                    button(p, ui, "BACK", Action::Back);
+                });
+            }
+            Screen::Profile => {
+                column_panel(p, &ui.panel_blue, 32., 38., |p| {
+                    let badges = |p: &mut ChildSpawnerCommands, stats: [(String, &str); 3]| {
+                        p.spawn(Node {
+                            width: percent(100),
+                            flex_direction: FlexDirection::Row,
+                            justify_content: JustifyContent::SpaceBetween,
+                            ..default()
+                        })
+                        .with_children(|row| {
+                            for (value, caption) in &stats {
+                                stat_badge(row, ui, value, caption);
+                            }
+                        });
+                    };
+                    let kd = |k: u32, d: u32| format!("{:.2}", k as f32 / d.max(1) as f32);
+                    text(p, "LAST MATCH", 13., SKY);
+                    badges(
+                        p,
+                        [
+                            (session.kills.to_string(), "KILLS"),
+                            (session.deaths.to_string(), "DEATHS"),
+                            (kd(session.kills, session.deaths), "K/D"),
+                        ],
+                    );
+                    text(p, "CAREER", 13., SKY);
+                    badges(
+                        p,
+                        [
+                            (career.kills.to_string(), "KILLS"),
+                            (career.deaths.to_string(), "DEATHS"),
+                            (kd(career.kills, career.deaths), "K/D"),
+                        ],
+                    );
+                    text(
+                        p,
+                        &format!(
+                            "{} MATCHES   /   {} WINS   /   {:.0}% WIN RATE",
+                            career.matches,
+                            career.wins,
+                            career.wins as f32 * 100. / career.matches.max(1) as f32
+                        ),
+                        14.,
+                        Color::WHITE,
+                    );
+                    button(p, ui, "BACK", Action::Back);
+                });
+            }
+            Screen::Paused => {
+                column_panel(p, &ui.panel_blue, 32., 38., |p| {
+                    primary_button(p, ui, "RESUME", Action::Resume);
+                    danger_button(p, ui, "LEAVE MATCH", Action::Back);
+                });
+            }
+            Screen::Dead => {
+                column_panel(p, &ui.panel_dark, 18., 26., |p| {
+                    primary_button(p, ui, "REDEPLOY", Action::Respawn);
+                    button(p, ui, "MAIN MENU", Action::Back);
+                });
+            }
+            Screen::Results => {
+                column_panel(p, &ui.panel_dark, 18., 26., |p| {
+                    text(
+                        p,
+                        &format!("BLUE {}   /   RED {}", session.blue, session.red),
+                        18.,
+                        Color::WHITE,
+                    );
+                    text(
+                        p,
+                        &format!("{} KILLS  -  {} DEATHS", session.kills, session.deaths),
+                        15.,
+                        Color::srgb(0.86, 0.93, 1.),
+                    );
+                    primary_button(p, ui, "PLAY AGAIN", Action::Play);
+                    button(p, ui, "MAIN MENU", Action::Back);
+                });
+            }
+            Screen::Playing => {}
+        }
+    });
+    text(root, HELP, 12., MUTED);
+}
+fn hud(
+    root: &mut ChildSpawnerCommands,
+    ui: &UiAssets,
+    crosshairs: &Crosshairs,
+    settings: &Settings,
+) {
+    let plate = Color::srgba(0.4, 0.48, 0.56, 0.94);
+    root.spawn(Node {
+        width: percent(100),
+        flex_direction: FlexDirection::Row,
+        justify_content: JustifyContent::SpaceBetween,
+        align_items: AlignItems::Start,
+        ..default()
+    })
+    .with_children(|row| {
+        row.spawn(panel(&ui.panel_dark, 18., plate, Node::default()))
+            .with_children(|p| {
+                p.spawn(Node {
+                    padding: UiRect::axes(px(18), px(11)),
+                    ..default()
+                })
+                .with_children(|p| label(p, "", 16., Color::WHITE, 1));
+            });
+    });
+    root.spawn(Node {
+        position_type: PositionType::Absolute,
+        left: percent(0),
+        top: percent(13.),
+        width: percent(100),
+        flex_direction: FlexDirection::Column,
+        align_items: AlignItems::Center,
+        row_gap: px(6),
+        ..default()
+    })
+    .with_children(|p| {
+        p.spawn(panel(&ui.panel_dark, 18., plate, Node::default()))
+            .with_children(|p| {
+                p.spawn(Node {
+                    padding: UiRect::axes(px(18), px(7)),
+                    ..default()
+                })
+                .with_children(|p| label(p, "", 15., SKY, 4));
+            });
+        label(p, "", 17., DANGER, 6);
+    });
+    root.spawn(Node {
+        position_type: PositionType::Absolute,
+        left: percent(0),
+        top: percent(0),
+        width: percent(100),
+        height: percent(100),
+        align_items: AlignItems::Center,
+        justify_content: JustifyContent::Center,
+        ..default()
+    })
+    .with_children(|p| {
+        p.spawn((
+            Crosshair,
+            ImageNode::new(crosshairs.images[settings.crosshair].clone()),
+            UiTransform::IDENTITY,
+            Node {
+                width: px(48),
+                height: px(48),
+                ..default()
+            },
+        ));
+    });
+    root.spawn(Node {
+        width: percent(100),
+        flex_direction: FlexDirection::Row,
+        justify_content: JustifyContent::SpaceBetween,
+        align_items: AlignItems::End,
+        ..default()
+    })
+    .with_children(|row| {
+        row.spawn(panel(&ui.panel_dark, 18., plate, Node::default()))
+            .with_children(|p| {
+                p.spawn(Node {
+                    padding: UiRect::axes(px(18), px(11)),
+                    ..default()
+                })
+                .with_children(|p| label(p, "", 18., Color::WHITE, 2));
+            });
+        row.spawn(Node {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::End,
+            ..default()
+        })
+        .with_children(|p| text(p, HELP, 11., MUTED));
+    });
 }
 pub fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(UiState(Screen::Results));
-    commands.insert_resource(AudioBank {
-        shots: (0..5)
-            .map(|i| assets.load(format!("audio/shot{i}.wav")))
+    commands.insert_resource(UiAssets {
+        panel: assets.load("ui/adventure/panel.png"),
+        panel_dark: assets.load("ui/adventure/panel_dark.png"),
+        panel_blue: assets.load("ui/adventure/panel_blue.png"),
+        panel_danger: assets.load("ui/adventure/panel_danger.png"),
+        button: assets.load("ui/adventure/button.png"),
+        button_danger: assets.load("ui/adventure/button_danger.png"),
+        check_on: assets.load("ui/adventure/check_on.png"),
+        check_off: assets.load("ui/adventure/check_off.png"),
+        bar_track: assets.load("ui/adventure/bar_track.png"),
+        bar_fill: assets.load("ui/adventure/bar_fill.png"),
+        banner: assets.load("ui/adventure/banner.png"),
+        hexagon: assets.load("ui/adventure/hexagon.png"),
+    });
+    commands.insert_resource(Crosshairs {
+        images: CROSSHAIRS
+            .iter()
+            .map(|(_, path)| assets.load(*path))
             .collect(),
+    });
+    commands.insert_resource(AudioBank {
+        blaster: assets.load("audio/blaster.ogg"),
+        blaster_repeater: assets.load("audio/blaster_repeater.ogg"),
+        enemy_attack: assets.load("audio/enemy_attack.ogg"),
+        enemy_hurt: assets.load("audio/enemy_hurt.ogg"),
+        jumps: [
+            assets.load("audio/jump_a.ogg"),
+            assets.load("audio/jump_b.ogg"),
+            assets.load("audio/jump_c.ogg"),
+        ],
+        land: assets.load("audio/land.ogg"),
+        walking: assets.load("audio/walking.ogg"),
         music: assets.load("audio/menu.wav"),
     });
 }
@@ -101,12 +761,17 @@ pub fn refresh(
     session: Res<Session>,
     settings: Res<Settings>,
     arsenal: Res<Arsenal>,
+    career: Res<Career>,
     progress: Res<BuildProgress>,
     player: Single<&Player>,
+    crosshairs: Res<Crosshairs>,
+    ui: Res<UiAssets>,
+    mouse: Res<ButtonInput<MouseButton>>,
     mut state: ResMut<UiState>,
     roots: Query<Entity, With<UiRoot>>,
     mut labels: Query<(&Label, &mut Text)>,
     mut bars: Query<&mut Node, With<LoadingBar>>,
+    mut reticles: Query<(&mut ImageNode, &mut UiTransform), With<Crosshair>>,
 ) {
     let screen = session.screen;
     for mut bar in &mut bars {
@@ -137,19 +802,12 @@ pub fn refresh(
                         ""
                     }
                 ),
-                3 => {
-                    if session.hit > 0. {
-                        "×".into()
-                    } else {
-                        "+".into()
-                    }
-                }
                 4 => {
                     if session.notice_time > 0. {
                         session.notice.clone()
                     } else {
                         format!(
-                            "BLUE {:02}    /    RED {:02}     •     FIRST TO 30",
+                            "BLUE {:02}    /    RED {:02}     /     FIRST TO 30",
                             session.blue, session.red
                         )
                     }
@@ -157,20 +815,21 @@ pub fn refresh(
                 5 => format!(
                     "{}%  /  {}",
                     progress.done * 100 / progress.total.max(1),
-                    [
-                        "Initializing Engine",
-                        "Loading World",
-                        "Loading World",
-                        "Loading World",
-                        "Loading Assets",
-                        "Preparing Weapons",
-                        "Loading World",
+                    if progress.done == progress.total {
                         "Ready to Play"
-                    ][if progress.done == progress.total {
-                        7
+                    } else if progress.built >= 7 {
+                        "Loading Assets"
                     } else {
-                        progress.built.min(6)
-                    }]
+                        [
+                            "Initializing Engine",
+                            "Building Arena",
+                            "Building Arena",
+                            "Building Arena",
+                            "Building Arena",
+                            "Spawning Targets",
+                            "Lighting Sector",
+                        ][progress.built.min(6)]
+                    }
                 ),
                 6 => {
                     if session.damage > 0. {
@@ -190,6 +849,22 @@ pub fn refresh(
             };
             **text = value;
         }
+        // Hit feedback and ADS shrink are driven here so the reticle stays a
+        // single image node instead of swapping textures.
+        let hit = session.hit > 0.;
+        let base = if mouse.pressed(MouseButton::Right) {
+            0.78
+        } else {
+            1.
+        };
+        for (mut image, mut transform) in &mut reticles {
+            image.color = if hit {
+                Color::srgb(1., 0.45, 0.2)
+            } else {
+                Color::WHITE
+            };
+            transform.scale = Vec2::splat(if hit { base * 1.3 } else { base });
+        }
         return;
     }
     state.0 = screen;
@@ -197,24 +872,31 @@ pub fn refresh(
         commands.entity(entity).despawn();
     }
     let playing = screen == Screen::Playing;
-    commands.spawn((UiRoot,Node{position_type:PositionType::Absolute,width:percent(100),height:percent(100),padding:UiRect::all(px(if playing{32.}else{64.})),flex_direction:FlexDirection::Column,justify_content:JustifyContent::SpaceBetween,..default()},BackgroundColor(if playing{Color::NONE}else{Color::srgba(0.012,0.02,0.035,0.88)}))).with_children(|root|{
- if playing {
- label(root,"",19.,Color::WHITE,1);root.spawn(Node{position_type:PositionType::Absolute,left:percent(49.5),top:percent(48.),..default()}).with_children(|p|label(p,"+",30.,Color::WHITE,3));
- root.spawn(Node{position_type:PositionType::Absolute,top:percent(15.),align_self:AlignSelf::Center,..default()}).with_children(|p|{label(p,"",18.,BLUE,4);label(p,"",20.,Color::srgb(1.,0.25,0.15),6);});label(root,"",23.,Color::WHITE,2);
- } else {
- root.spawn(Node{flex_direction:FlexDirection::Column,row_gap:px(8),..default()}).with_children(|p|{label(p,"F I V E P L A Y",54.,Color::WHITE,0);label(p,"TACTICAL ARENA  /  SECTOR 05",14.,BLUE,0);});
- root.spawn(Node{width:px(430),max_width:percent(100),flex_direction:FlexDirection::Column,row_gap:px(8),..default()}).with_children(|p|{match screen {
- Screen::Loading=>{label(p,"DEPLOYMENT SYSTEMS",22.,Color::WHITE,0);label(p,"Initializing Engine",17.,BLUE,5); p.spawn((Node{width:percent(100),height:px(5),..default()},BackgroundColor(Color::srgb(0.1,0.15,0.2)))).with_children(|b|{b.spawn((LoadingBar,Node{width:percent(0),height:percent(100),..default()},BackgroundColor(BLUE)));});},
- Screen::Menu=>{label(p,"01 / READY TO DEPLOY",16.,BLUE,0);button(p,"PLAY",Action::Play);button(p,&format!("MODE / {:?}",session.mode),Action::Mode);button(p,"LOADOUT",Action::Loadout);button(p,"SETTINGS",Action::Settings);button(p,"PROFILE",Action::Profile);button(p,"QUIT",Action::Quit);},
- Screen::Loadout=>{label(p,"SELECT PRIMARY",22.,BLUE,0);for(i,w)in WEAPONS.iter().enumerate(){button(p,&format!("{} {}",if i==arsenal.selected{"●"}else{"○"},w.name),Action::Weapon(i));}button(p,"BACK",Action::Back);},
- Screen::Settings=>{label(p,"OPERATIONS / SETTINGS",22.,BLUE,0);button(p,&format!("SENSITIVITY / {:.1}",settings.sensitivity*1000.),Action::Sensitivity);button(p,&format!("FIELD OF VIEW / {:.0}°",settings.fov),Action::Fov);button(p,&format!("AUDIO / {:.0}%",settings.volume*100.),Action::Volume);button(p,&format!("SHADOWS / {}",if settings.shadows{"ON"}else{"OFF"}),Action::Shadows);button(p,"RESOLUTION / CYCLE 1080p · 1440p · 4K",Action::Resolution);button(p,"BACK",Action::Back);},
- Screen::Profile=>{label(p,"SESSION RECORD",22.,BLUE,0);label(p,&format!("{} ELIMINATIONS\n{} DEATHS\n{:.2} K/D",session.kills,session.deaths,session.kills as f32/session.deaths.max(1)as f32),26.,Color::WHITE,0);button(p,"BACK",Action::Back);},
- Screen::Paused=>{label(p,"MATCH PAUSED",26.,Color::WHITE,0);button(p,"RESUME",Action::Resume);button(p,"LEAVE MATCH",Action::Back);},
- Screen::Dead=>{label(p,"YOU WERE ELIMINATED",26.,Color::WHITE,0);button(p,"REDEPLOY",Action::Respawn);button(p,"MAIN MENU",Action::Back);},
- Screen::Results=>{label(p,if session.blue>=session.red{"VICTORY"}else{"MATCH COMPLETE"},36.,BLUE,0);label(p,&format!("BLUE {} / RED {}\n{} KILLS · {} DEATHS",session.blue,session.red,session.kills,session.deaths),24.,Color::WHITE,0);button(p,"PLAY AGAIN",Action::Play);button(p,"MAIN MENU",Action::Back);},_=>{}}});
- label(root,"WASD MOVE   /   SHIFT SPRINT   /   CTRL SLIDE   /   SPACE JUMP\nLMB FIRE   /   RMB AIM   /   R RELOAD   /   1–5 WEAPONS   /   ESC PAUSE",13.,Color::srgb(0.5,0.6,0.7),0);
- }
- });
+    commands
+        .spawn((
+            UiRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                width: percent(100),
+                height: percent(100),
+                padding: UiRect::all(px(if playing { 24. } else { 56. })),
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::SpaceBetween,
+                ..default()
+            },
+            BackgroundColor(if playing {
+                Color::NONE
+            } else {
+                Color::srgba(0.012, 0.02, 0.035, 0.9)
+            }),
+        ))
+        .with_children(|root| {
+            if playing {
+                hud(root, &ui, &crosshairs, &settings);
+            } else {
+                menu_screen(root, &ui, &crosshairs, &settings, &session, &arsenal, &career);
+            }
+        });
 }
 pub fn interact(
     mut actions: ResMut<Actions>,
@@ -273,7 +955,9 @@ pub fn interact(
                 player.0.health = 100.;
                 player.0.velocity = Vec3::ZERO;
                 player.1.translation = Vec3::new(0., 1., 14.);
+                let selected = arsenal.selected;
                 *arsenal = Arsenal::default();
+                arsenal.selected = selected;
                 session.screen = Screen::Playing;
             }
             Action::Sensitivity => {
@@ -302,6 +986,10 @@ pub fn interact(
                 for mut light in &mut lights {
                     light.shadow_maps_enabled = settings.shadows;
                 }
+                state.0 = Screen::Loading;
+            }
+            Action::Crosshair => {
+                settings.crosshair = (settings.crosshair + 1) % CROSSHAIRS.len();
                 state.0 = Screen::Loading;
             }
             Action::Resolution => {

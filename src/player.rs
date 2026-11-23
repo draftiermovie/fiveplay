@@ -42,9 +42,11 @@ pub fn movement(
     mouse: Res<ButtonInput<MouseButton>>,
     session: Res<Session>,
     settings: Res<Settings>,
+    mut commands: Commands,
     spatial: SpatialQuery,
     mut player: Single<(&mut Player, &mut Transform), Without<ArenaCamera>>,
     mut camera: Single<(&mut Transform, &mut Projection), With<ArenaCamera>>,
+    mut jump_flip: Local<u8>,
 ) {
     if session.screen != Screen::Playing {
         return;
@@ -78,6 +80,7 @@ pub fn movement(
         p.velocity.x = p.velocity.x.lerp(desired.x, blend);
         p.velocity.z = p.velocity.z.lerp(desired.z, blend);
     }
+    let was_grounded = p.grounded;
     p.grounded = spatial
         .cast_ray(
             tr.translation,
@@ -87,11 +90,19 @@ pub fn movement(
             &SpatialQueryFilter::default(),
         )
         .is_some();
+    if p.grounded && !was_grounded && p.velocity.y < -3. {
+        crate::audio::play(&mut commands, &settings, 0.9, |b| b.land.clone());
+    }
     if p.grounded && p.velocity.y < 0. {
         p.velocity.y = 0.;
     }
     if keys.just_pressed(KeyCode::Space) && p.grounded {
         p.velocity.y = 7.;
+        let variant = (*jump_flip % 3) as usize;
+        *jump_flip = (*jump_flip + 1) % 3;
+        crate::audio::play(&mut commands, &settings, 0.8, move |b| {
+            b.jumps[variant].clone()
+        });
     }
     p.velocity.y -= 20. * dt;
     // Sweep the player capsule along each axis; collider dimensions stay fixed while crouching.

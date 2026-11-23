@@ -62,6 +62,7 @@ pub struct Settings {
     pub fov: f32,
     pub volume: f32,
     pub shadows: bool,
+    pub crosshair: usize,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -70,6 +71,7 @@ impl Default for Settings {
             fov: 90.,
             volume: 0.4,
             shadows: true,
+            crosshair: 1,
         }
     }
 }
@@ -79,6 +81,7 @@ pub fn input(
     mut cursor: Single<&mut CursorOptions>,
     time: Res<Time>,
     options: Res<RunOptions>,
+    mut career: ResMut<crate::save::Career>,
 ) {
     session.elapsed += time.delta_secs();
     session.hit = (session.hit - time.delta_secs()).max(0.);
@@ -109,6 +112,10 @@ pub fn input(
         session.remaining = (session.remaining - time.delta_secs()).max(0.);
         if session.remaining == 0. || session.blue >= 30 || session.red >= 30 {
             session.screen = Screen::Results;
+            career.matches += 1;
+            if session.blue >= session.red {
+                career.wins += 1;
+            }
         }
     }
 }

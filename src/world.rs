@@ -18,7 +18,11 @@ pub struct Palette {
     pub orange: Handle<StandardMaterial>,
     pub metal: Handle<StandardMaterial>,
 }
-pub fn setup(mut commands: Commands, mut mats: ResMut<Assets<StandardMaterial>>) {
+pub fn setup(
+    mut commands: Commands,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    settings: Res<Settings>,
+) {
     let palette = Palette {
         floor: mats.add(Color::srgb(0.055, 0.068, 0.085)),
         wall: mats.add(Color::srgb(0.16, 0.19, 0.23)),
@@ -43,7 +47,7 @@ pub fn setup(mut commands: Commands, mut mats: ResMut<Assets<StandardMaterial>>)
     commands.spawn((
         DirectionalLight {
             illuminance: 6500.,
-            shadow_maps_enabled: true,
+            shadow_maps_enabled: settings.shadows,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.9, -0.5, 0.)),
@@ -78,12 +82,15 @@ pub fn build(
     mut meshes: ResMut<Assets<Mesh>>,
     assets: Res<AssetServer>,
     bank: Res<crate::audio::AudioBank>,
+    crosshairs: Res<crate::ui::Crosshairs>,
+    ui_assets: Res<crate::ui::UiAssets>,
     time: Res<Time>,
 ) {
     if session.screen != Screen::Loading {
         return;
     }
-    progress.total = 14;
+    progress.total =
+        8 + bank.handles().count() + crosshairs.handles().count() + ui_assets.handles().count();
     match progress.built {
         0 => solid(
             &mut commands,
@@ -191,12 +198,25 @@ pub fn build(
         _ => {}
     }
     progress.built = (progress.built + 1).min(8);
-    let loaded = bank
-        .shots
-        .iter()
-        .chain(std::iter::once(&bank.music))
-        .filter(|h| assets.is_loaded_with_dependencies(h.id()))
-        .count();
+    // A texture or clip counts once it is fully loaded. A missing or broken file
+    // counts as settled too, so an incomplete asset pack can never hang the
+    // loading screen.
+    let settled = |id: bevy::asset::UntypedAssetId| {
+        assets.is_loaded_with_dependencies(id)
+            || matches!(
+                assets.get_load_state(id),
+                Some(bevy::asset::LoadState::Failed(_))
+            )
+    };
+    let loaded = bank.handles().filter(|h| settled(h.id().into())).count()
+        + crosshairs
+            .handles()
+            .filter(|h| settled(h.id().into()))
+            .count()
+        + ui_assets
+            .handles()
+            .filter(|h| settled(h.id().into()))
+            .count();
     progress.done = progress.built + loaded;
     if progress.done == progress.total {
         progress.ready_for += time.delta_secs();
