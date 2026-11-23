@@ -113,7 +113,7 @@ pub fn input(
         if session.remaining == 0. || session.blue >= 30 || session.red >= 30 {
             session.screen = Screen::Results;
             career.matches += 1;
-            if session.blue >= session.red {
+            if session.blue > session.red {
                 career.wins += 1;
             }
         }

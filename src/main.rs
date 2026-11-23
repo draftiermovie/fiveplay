@@ -28,7 +28,7 @@ fn main() {
         {
             if let Some(root) = exe_dir.ancestors().find(|d| d.join("assets").is_dir()) {
                 unsafe {
-                    let _ = std::env::set_var("BEVY_ASSET_ROOT", root);
+                    std::env::set_var("BEVY_ASSET_ROOT", root);
                 }
             }
         }

@@ -1,7 +1,11 @@
 //! Persists settings, loadout, mode and career stats to a small `key=value`
 //! file in the user's data directory. Unknown or malformed lines are ignored
 //! so an old or hand-edited save never prevents the game from starting.
-use crate::{game::*, ui::CROSSHAIRS, weapons::{Arsenal, WEAPONS}};
+use crate::{
+    game::*,
+    ui::CROSSHAIRS,
+    weapons::{Arsenal, WEAPONS},
+};
 use bevy::prelude::*;
 use std::path::PathBuf;
 
@@ -261,7 +265,8 @@ mod tests {
     }
     #[test]
     fn garbage_falls_back_to_defaults() {
-        let parsed = SaveData::parse("fov=NaN\nweapon=99\ncrosshair=-1\nmode=ctf\nkills=abc\nnonsense\n");
+        let parsed =
+            SaveData::parse("fov=NaN\nweapon=99\ncrosshair=-1\nmode=ctf\nkills=abc\nnonsense\n");
         assert_eq!(parsed, SaveData::default());
         assert_eq!(SaveData::parse(""), SaveData::default());
     }

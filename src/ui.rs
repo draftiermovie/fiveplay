@@ -1,8 +1,8 @@
 use crate::{
     audio::AudioBank,
-    save::Career,
     game::*,
     player::Player,
+    save::Career,
     weapons::{Arsenal, WEAPONS},
     world::BuildProgress,
 };
@@ -395,8 +395,10 @@ fn screen_title(screen: Screen, session: &Session) -> &'static str {
         Screen::Paused => "MATCH PAUSED",
         Screen::Dead => "YOU WERE ELIMINATED",
         Screen::Results => {
-            if session.blue >= session.red {
+            if session.blue > session.red {
                 "VICTORY"
+            } else if session.blue == session.red {
+                "DRAW"
             } else {
                 "MATCH COMPLETE"
             }
@@ -894,7 +896,15 @@ pub fn refresh(
             if playing {
                 hud(root, &ui, &crosshairs, &settings);
             } else {
-                menu_screen(root, &ui, &crosshairs, &settings, &session, &arsenal, &career);
+                menu_screen(
+                    root,
+                    &ui,
+                    &crosshairs,
+                    &settings,
+                    &session,
+                    &arsenal,
+                    &career,
+                );
             }
         });
 }
@@ -961,7 +971,8 @@ pub fn interact(
                 session.screen = Screen::Playing;
             }
             Action::Sensitivity => {
-                settings.sensitivity += 0.0005;
+                // Snap to the 0.0005 grid so repeated steps do not drift.
+                settings.sensitivity = ((settings.sensitivity + 0.0005) * 2000.).round() / 2000.;
                 if settings.sensitivity > 0.005 {
                     settings.sensitivity = 0.001;
                 }
@@ -975,7 +986,7 @@ pub fn interact(
                 state.0 = Screen::Loading;
             }
             Action::Volume => {
-                settings.volume += 0.1;
+                settings.volume = ((settings.volume + 0.1) * 10.).round() / 10.;
                 if settings.volume > 1.01 {
                     settings.volume = 0.;
                 }

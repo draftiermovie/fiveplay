@@ -177,7 +177,8 @@ pub fn update(
     .iter()
     .enumerate()
     {
-        if keys.just_pressed(*key) {
+        // Re-pressing the current weapon's key must not cancel its reload.
+        if keys.just_pressed(*key) && arsenal.selected != i {
             arsenal.selected = i;
             arsenal.reload = 0.;
         }
@@ -231,6 +232,11 @@ pub fn update(
     } else {
         mouse.just_pressed(MouseButton::Left)
     };
+    if shoot && arsenal.ammo[index] == 0 && arsenal.reserve[index] > 0 {
+        // Pulling the trigger on an empty magazine starts a reload.
+        arsenal.reload = weapon.reload;
+        return;
+    }
     if !shoot || arsenal.cooldown > 0. || arsenal.ammo[index] == 0 {
         return;
     }
@@ -265,7 +271,7 @@ pub fn update(
             .map_or(weapon.range, |h| h.distance);
         let mut nearest = wall;
         let mut victim = None;
-        for (mut bot, tr) in &mut bots {
+        for (bot, tr) in &bots {
             if bot.health <= 0. || session.mode == Mode::TeamDeathmatch && bot.team == 1 {
                 continue;
             }
@@ -283,7 +289,6 @@ pub fn update(
                     victim = Some((bot.index, head));
                 }
             }
-            let _ = &mut bot;
         }
         if let Some((id, head)) = victim {
             hurt = true;

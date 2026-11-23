@@ -56,12 +56,18 @@ pub fn movement(
     let crouch = keys.pressed(KeyCode::ControlLeft);
     let sprint = keys.pressed(KeyCode::ShiftLeft) && !mouse.pressed(MouseButton::Right);
     if keys.just_pressed(KeyCode::ControlLeft) && sprint && p.grounded {
-        p.slide = 0.65;
+        // Launch the slide at slide speed along the current direction of travel;
+        // horizontal velocity is then held (not steered) until the slide ends.
+        let horizontal = Vec2::new(p.velocity.x, p.velocity.z);
+        if horizontal.length() > 1. {
+            let boosted = horizontal.normalize() * 12.;
+            p.velocity.x = boosted.x;
+            p.velocity.z = boosted.y;
+            p.slide = 0.65;
+        }
     }
     p.slide = (p.slide - dt).max(0.);
-    let speed = if p.slide > 0. {
-        12.
-    } else if crouch {
+    let speed = if crouch {
         3.
     } else if sprint {
         9.
@@ -132,6 +138,8 @@ pub fn movement(
     }
     if tr.translation.y < -10. {
         tr.translation = Vec3::new(0., 1., 14.);
+        p.velocity = Vec3::ZERO;
+        p.slide = 0.;
     }
     let eye = if crouch || p.slide > 0. { 0.22 } else { 0.65 };
     let bob = if p.grounded {

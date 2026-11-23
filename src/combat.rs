@@ -46,8 +46,9 @@ pub fn bots(
         let flat = Vec3::new(offset.x, 0., offset.z);
         let distance = flat.length();
         let direction = flat.normalize_or_zero();
+        // Hostiles close in on the player; allies follow at a short distance.
         if distance > 7. {
-            let move_dir = if ally { -direction } else { direction };
+            let move_dir = direction;
             let origin = tr.translation + Vec3::Y;
             let clear = spatial
                 .cast_ray(
@@ -93,7 +94,9 @@ pub fn bots(
                     player.0.health -= 7.;
                     player.0.hurt_time = 0.;
                     session.damage = 0.45;
-                    session.damage_angle = offset.x.atan2(offset.z) - player.0.yaw;
+                    // Angle of the attacker as seen from the player (offset points
+                    // from the bot to the player, so it is negated here).
+                    session.damage_angle = (-offset.x).atan2(-offset.z) - player.0.yaw;
                     if player.0.health <= 0. {
                         session.deaths += 1;
                         career.deaths += 1;
