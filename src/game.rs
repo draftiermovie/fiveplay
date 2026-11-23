@@ -86,6 +86,8 @@ pub struct Session {
     pub elapsed: f32,
     /// Where Settings returns to: the main menu or the pause menu.
     pub settings_from: Screen,
+    /// Where Resume returns to: the match, or spectating while dead.
+    pub paused_from: Screen,
 }
 impl Default for Session {
     fn default() -> Self {
@@ -105,6 +107,7 @@ impl Default for Session {
             damage_angle: 0.,
             elapsed: 0.,
             settings_from: Screen::Menu,
+            paused_from: Screen::Playing,
         }
     }
 }
@@ -149,8 +152,11 @@ pub fn input(
     session.notice_time = (session.notice_time - time.delta_secs()).max(0.);
     if keys.just_pressed(KeyCode::Escape) {
         session.screen = match session.screen {
-            Screen::Playing => Screen::Paused,
-            Screen::Paused => Screen::Playing,
+            Screen::Playing | Screen::Dead => {
+                session.paused_from = session.screen;
+                Screen::Paused
+            }
+            Screen::Paused => session.paused_from,
             Screen::Loading => Screen::Loading,
             Screen::Settings => session.settings_from,
             Screen::Controls => Screen::Settings,
@@ -170,7 +176,8 @@ pub fn input(
     if cursor.grab_mode != grab {
         cursor.grab_mode = grab;
     }
-    if locked {
+    // The match (clock, limits) keeps running while the player is dead.
+    if locked || session.screen == Screen::Dead {
         session.remaining = (session.remaining - time.delta_secs()).max(0.);
         if board.finished(&session) {
             session.screen = Screen::Results;

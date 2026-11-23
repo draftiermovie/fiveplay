@@ -205,8 +205,7 @@ pub fn update(
 
     if mode == Mode::CaptureTheFlag {
         for t in 0..2 {
-            // A dead carrier drops the flag where they fell (also while the
-            // player is on the death screen).
+            // A dead carrier drops the flag where they fell.
             if let FlagState::Carried(c) = obj.flags[t].state
                 && !alive(c)
             {
@@ -218,9 +217,6 @@ pub fn update(
                     team_name(t)
                 ));
             }
-        }
-        if !playing {
-            return;
         }
         for t in 0..2 {
             let mut flag = obj.flags[t];
@@ -300,7 +296,7 @@ pub fn update(
             }
             obj.flags[t] = flag;
         }
-    } else if playing {
+    } else {
         let mut present = [false; 2];
         for b in bodies.iter().filter(|b| b.alive) {
             if flat(b.feet, Vec3::ZERO) < HILL_RADIUS && b.feet.y < 4. {

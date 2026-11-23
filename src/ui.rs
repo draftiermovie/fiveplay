@@ -67,6 +67,8 @@ pub enum Action {
     Fullscreen,
     Controls,
     Rebind(Bind),
+    PrevTarget,
+    NextTarget,
     ResetControls,
     Fps,
     Weapon(usize),
@@ -709,6 +711,128 @@ fn menu_screen(
     });
     text(root, &help(settings), 12., MUTED);
 }
+/// The kill feed, top right below the FPS counter.
+fn kill_feed(root: &mut ChildSpawnerCommands) {
+    root.spawn(Node {
+        position_type: PositionType::Absolute,
+        right: px(24),
+        top: px(48),
+        flex_direction: FlexDirection::Column,
+        align_items: AlignItems::End,
+        ..default()
+    })
+    .with_children(|p| {
+        p.spawn((
+            KillFeed,
+            Text::new(""),
+            TextFont {
+                font_size: 14.0.into(),
+                ..default()
+            },
+            TextColor(Color::WHITE),
+            TextShadow {
+                offset: Vec2::splat(1.5),
+                color: Color::srgba(0., 0., 0., 0.8),
+            },
+        ));
+    });
+}
+/// Full standings, shown while the scoreboard key is held.
+fn score_overlay(root: &mut ChildSpawnerCommands, ui: &UiAssets) {
+    root.spawn((
+        ScorePanel,
+        Node {
+            position_type: PositionType::Absolute,
+            left: percent(0),
+            top: percent(22.),
+            width: percent(100),
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        Visibility::Hidden,
+    ))
+    .with_children(|p| {
+        p.spawn(panel(&ui.panel_dark, 18., Color::WHITE, Node::default()))
+            .with_children(|p| {
+                p.spawn(Node {
+                    padding: UiRect::axes(px(26), px(18)),
+                    flex_direction: FlexDirection::Column,
+                    ..default()
+                })
+                .with_children(standings_table);
+            });
+    });
+}
+/// While dead: who killed you, the spectator line, and redeploy controls.
+/// The view stays visible behind it (kill-cam, then chase camera).
+fn death_hud(root: &mut ChildSpawnerCommands, ui: &UiAssets, title: &str) {
+    root.spawn(Node {
+        width: percent(100),
+        flex_direction: FlexDirection::Column,
+        align_items: AlignItems::Center,
+        row_gap: px(8),
+        ..default()
+    })
+    .with_children(|p| {
+        p.spawn(panel(&ui.panel_danger, 18., Color::WHITE, Node::default()))
+            .with_children(|p| {
+                p.spawn(Node {
+                    padding: UiRect::axes(px(28), px(12)),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: px(4),
+                    ..default()
+                })
+                .with_children(|p| {
+                    text(p, title, 22., Color::WHITE);
+                    label(p, "", 15., Color::srgb(1., 0.88, 0.84), 7);
+                });
+            });
+        let plate = Color::srgba(0.4, 0.48, 0.56, 0.94);
+        p.spawn(panel(&ui.panel_dark, 18., plate, Node::default()))
+            .with_children(|p| {
+                p.spawn(Node {
+                    padding: UiRect::axes(px(18), px(7)),
+                    ..default()
+                })
+                .with_children(|p| label(p, "", 15., SKY, 4));
+            });
+    });
+    kill_feed(root);
+    score_overlay(root, ui);
+    root.spawn(Node {
+        width: percent(100),
+        flex_direction: FlexDirection::Column,
+        align_items: AlignItems::Center,
+        ..default()
+    })
+    .with_children(|p| {
+        column_panel(p, &ui.panel_dark, 18., 22., |p| {
+            label(p, "", 15., Color::WHITE, 8);
+            p.spawn(Node {
+                width: percent(100),
+                flex_direction: FlexDirection::Row,
+                column_gap: px(10),
+                ..default()
+            })
+            .with_children(|row| {
+                for (title, action) in [
+                    ("<  PREV", Action::PrevTarget),
+                    ("NEXT  >", Action::NextTarget),
+                ] {
+                    row.spawn(Node {
+                        width: percent(50),
+                        ..default()
+                    })
+                    .with_children(|cell| button(cell, ui, title, action));
+                }
+            });
+            label(p, "", 14., SKY, 9);
+            primary_button(p, ui, "REDEPLOY", Action::Respawn);
+            button(p, ui, "MAIN MENU", Action::Back);
+        });
+    });
+}
 fn hud(
     root: &mut ChildSpawnerCommands,
     ui: &UiAssets,
@@ -754,54 +878,8 @@ fn hud(
             });
         label(p, "", 17., DANGER, 6);
     });
-    // Kill feed, top right below the FPS counter.
-    root.spawn(Node {
-        position_type: PositionType::Absolute,
-        right: px(24),
-        top: px(48),
-        flex_direction: FlexDirection::Column,
-        align_items: AlignItems::End,
-        ..default()
-    })
-    .with_children(|p| {
-        p.spawn((
-            KillFeed,
-            Text::new(""),
-            TextFont {
-                font_size: 14.0.into(),
-                ..default()
-            },
-            TextColor(Color::WHITE),
-            TextShadow {
-                offset: Vec2::splat(1.5),
-                color: Color::srgba(0., 0., 0., 0.8),
-            },
-        ));
-    });
-    // Hold TAB: full standings.
-    root.spawn((
-        ScorePanel,
-        Node {
-            position_type: PositionType::Absolute,
-            left: percent(0),
-            top: percent(22.),
-            width: percent(100),
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        Visibility::Hidden,
-    ))
-    .with_children(|p| {
-        p.spawn(panel(&ui.panel_dark, 18., Color::WHITE, Node::default()))
-            .with_children(|p| {
-                p.spawn(Node {
-                    padding: UiRect::axes(px(26), px(18)),
-                    flex_direction: FlexDirection::Column,
-                    ..default()
-                })
-                .with_children(standings_table);
-            });
-    });
+    kill_feed(root);
+    score_overlay(root, ui);
     root.spawn(Node {
         position_type: PositionType::Absolute,
         left: percent(0),
@@ -903,10 +981,11 @@ pub fn refresh(
     mut labels: Query<(&Label, &mut Text)>,
     mut bars: Query<&mut Node, With<LoadingBar>>,
     mut reticles: Query<(&mut ImageNode, &mut UiTransform), With<Crosshair>>,
-    (board, rebind, objective): (
+    (board, rebind, objective, spectate): (
         Res<Scoreboard>,
         Res<Rebind>,
         Res<crate::objective::Objective>,
+        Res<crate::spectate::Spectate>,
     ),
 ) {
     let screen = session.screen;
@@ -990,9 +1069,14 @@ pub fn refresh(
                         String::new()
                     }
                 }
+                7 => spectate.killer_line(),
+                8 => spectate.focus_line(&settings),
+                9 => spectate.redeploy_line(&settings),
                 _ => continue,
             };
-            **text = value;
+            if **text != value {
+                **text = value;
+            }
         }
         // Hit feedback and ADS shrink are driven here so the reticle stays a
         // single image node instead of swapping textures.
@@ -1017,6 +1101,7 @@ pub fn refresh(
         commands.entity(entity).despawn();
     }
     let playing = screen == Screen::Playing;
+    let dead = screen == Screen::Dead;
     commands
         .spawn((
             UiRoot,
@@ -1024,13 +1109,16 @@ pub fn refresh(
                 position_type: PositionType::Absolute,
                 width: percent(100),
                 height: percent(100),
-                padding: UiRect::all(px(if playing { 24. } else { 56. })),
+                padding: UiRect::all(px(if playing || dead { 24. } else { 56. })),
                 flex_direction: FlexDirection::Column,
                 justify_content: JustifyContent::SpaceBetween,
                 ..default()
             },
             BackgroundColor(if playing {
                 Color::NONE
+            } else if dead {
+                // A faint red wash over the kill-cam and spectator view.
+                Color::srgba(0.35, 0.02, 0.02, 0.12)
             } else {
                 Color::srgba(0.012, 0.02, 0.035, 0.9)
             }),
@@ -1038,6 +1126,8 @@ pub fn refresh(
         .with_children(|root| {
             if playing {
                 hud(root, &ui, &crosshairs, &settings);
+            } else if dead {
+                death_hud(root, &ui, &screen_title(screen, &session, &board));
             } else {
                 menu_screen(
                     root,
@@ -1064,10 +1154,11 @@ pub fn interact(
     mut window: Single<&mut Window>,
     mut exit: MessageWriter<AppExit>,
     mut bots: Query<(&mut crate::combat::Bot, &mut Transform, &mut Visibility), Without<Player>>,
-    (mut board, mut rebind, mut objective): (
+    (mut board, mut rebind, mut objective, mut spectate): (
         ResMut<Scoreboard>,
         ResMut<Rebind>,
         ResMut<crate::objective::Objective>,
+        ResMut<crate::spectate::Spectate>,
     ),
 ) {
     for action in actions.0.drain(..) {
@@ -1075,6 +1166,7 @@ pub fn interact(
             Action::Play => {
                 board.reset();
                 objective.reset();
+                *spectate = default();
                 session.notice_time = 0.;
                 session.damage = 0.;
                 session.kills = 0;
@@ -1141,8 +1233,15 @@ pub fn interact(
                     _ => Screen::Menu,
                 };
             }
-            Action::Resume => session.screen = Screen::Playing,
+            Action::Resume => session.screen = session.paused_from,
+            Action::PrevTarget => spectate.cycle -= 1,
+            Action::NextTarget => spectate.cycle += 1,
             Action::Respawn => {
+                // Not before the kill-cam and countdown are over.
+                if !spectate.ready() {
+                    continue;
+                }
+                *spectate = default();
                 player.0.health = 100.;
                 player.0.velocity = Vec3::ZERO;
                 player.1.translation = crate::world::player_spawn(session.map, session.mode);
@@ -1344,8 +1443,8 @@ pub fn standings(
             text.0 = value;
         }
     }
-    let show =
-        session.screen == Screen::Playing && settings.bindings.pressed(&keys, Bind::Scoreboard);
+    let show = matches!(session.screen, Screen::Playing | Screen::Dead)
+        && settings.bindings.pressed(&keys, Bind::Scoreboard);
     for mut visibility in &mut panels {
         let target = if show {
             Visibility::Inherited

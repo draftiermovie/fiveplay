@@ -10,6 +10,7 @@ mod player;
 mod save;
 mod score;
 mod soldier;
+mod spectate;
 mod ui;
 mod weapons;
 mod world;
@@ -76,6 +77,7 @@ fn main() {
     .init_resource::<ai::NavGrid>()
     .init_resource::<score::Scoreboard>()
     .init_resource::<objective::Objective>()
+    .init_resource::<spectate::Spectate>()
     .add_systems(
         Startup,
         (world::setup, ui::setup, objective::setup, soldier::setup).chain(),
@@ -98,6 +100,7 @@ fn main() {
                 weapons::update,
                 ai::bots,
                 objective::update,
+                spectate::camera,
             )
                 .chain(),
             (

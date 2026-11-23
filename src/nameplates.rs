@@ -95,7 +95,7 @@ pub fn update(
     // The camera's GlobalTransform lags a frame behind movement; derive it
     // from the Transform written this frame so plates do not swim.
     let cam_global = GlobalTransform::from(*cam_tr);
-    let playing = session.screen == Screen::Playing;
+    let playing = matches!(session.screen, Screen::Playing | Screen::Dead);
     for (plate_entity, plate, mut node, mut visibility, children) in &mut plates {
         let Ok((bot, bot_tr)) = bots.get(plate.0) else {
             commands.entity(plate_entity).despawn();

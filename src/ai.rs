@@ -382,9 +382,13 @@ pub fn bots(
     spatial: SpatialQuery,
     (palette, mut meshes): (Res<Palette>, ResMut<Assets<Mesh>>),
     mut seed: Local<u64>,
-    objective: Res<crate::objective::Objective>,
+    (objective, mut spectate): (
+        Res<crate::objective::Objective>,
+        ResMut<crate::spectate::Spectate>,
+    ),
 ) {
-    if session.screen != Screen::Playing {
+    // Bots keep fighting while the player is dead and spectating.
+    if !matches!(session.screen, Screen::Playing | Screen::Dead) {
         return;
     }
     let dt = time.delta_secs().min(0.05);
@@ -727,6 +731,7 @@ pub fn bots(
             session.damage_angle = from.x.atan2(from.z) - player.0.yaw;
             if player.0.health <= 0. {
                 board.record(&mut session, &mut career, shot.attacker, PLAYER, false);
+                spectate.begin(shot.attacker);
                 session.screen = Screen::Dead;
             }
             continue;

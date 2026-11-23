@@ -68,6 +68,8 @@ Choose the mode with **MODE /** in the main menu (saved). In the team modes you 
 
 Hold **Tab** during a match for the standings; the kill feed (kills and flag events) sits top right. Matches last five minutes at most.
 
+When you die the match keeps running. A short kill-cam turns towards your killer and shows their remaining health; then a chase camera follows a living combatant (your killer first, then teammates first in team modes). Switch with your left/right movement keys or the PREV/NEXT buttons. After a 3 s countdown, press Jump (Space) or click REDEPLOY. Escape pauses; Resume returns to spectating.
+
 Bots use a navigation grid sampled from each map's colliders and A* pathfinding, so they path around cover and climb 1 m ledges (the Skyreach hill and perches). Each bot targets the nearest visible enemy, preferring whoever last shot it, then holds its own preferred range while strafing; now and then it takes nearby high ground. Below 40 health it retreats to a spot its attacker cannot see and heals. Bot shots can miss, more often at range and against moving targets, and leave tracers. Bots respawn after three seconds at the spawn point furthest from their enemies.
 
 For an unattended AI check, `FIVEPLAY_SOAK=60 cargo run -- --smoke-test` keeps the Skyreach match running for 60 s (the player is a spectator in smoke tests), logging each bot's plan every five seconds and the final standings.
@@ -87,7 +89,7 @@ Choose the map from the main menu (**MAP /**); the choice is saved.
 
 The kit models reference a shared `Textures/colormap.png`, which is not included. Without it every model gets a flat colour, and Bevy logs one `Path not found` error for the texture on startup. To use the original look, copy `Textures/colormap.png` from the Platformer Kit download into `assets/models/Textures/`. It is detected automatically.
 
-Settings has sliders for mouse sensitivity, field of view and audio volume (drag, click the rail, or use the arrow keys), and toggles for fullscreen (borderless), shadows and the FPS counter, plus crosshair and 1080p/1440p/4K window size. Everything is saved. Settings is also reachable from the pause menu without leaving the match; Back or Escape returns to the pause menu. The FPS counter (top right, on by default) shows the smoothed frame rate and frame time: green at 60+ FPS, amber at 30+, red below. The selected resolution is requested from the window manager; desktop limits may affect its actual size. PLAY starts a five-minute match. Health regenerates after five seconds without damage. Bots respawn after three seconds; player redeployment is manual.
+Settings has sliders for mouse sensitivity, field of view and audio volume (drag, click the rail, or use the arrow keys), and toggles for fullscreen (borderless), shadows and the FPS counter, plus crosshair and 1080p/1440p/4K window size. Everything is saved. Settings is also reachable from the pause menu without leaving the match; Back or Escape returns to the pause menu. The FPS counter (top right, on by default) shows the smoothed frame rate and frame time: green at 60+ FPS, amber at 30+, red below. The selected resolution is requested from the window manager; desktop limits may affect its actual size. PLAY starts a five-minute match. Health regenerates after five seconds without damage. Bots respawn after three seconds; the player redeploys from the spectator screen after three seconds.
 
 ## Source map
 
@@ -101,6 +103,7 @@ Settings has sliders for mouse sensitivity, field of view and audio volume (drag
 - `score.rs`: per-combatant standings, team scores, win conditions and the kill feed.
 - `objective.rs`: Capture the Flag and King of the Hill rules, bot objective goals and the flag/hill visuals.
 - `combat.rs`: bot state, soldier hit areas and effect cleanup.
+- `spectate.rs`: kill-cam and spectator camera while dead, redeploy countdown.
 - `soldier.rs`: the procedural soldier model, first-person arms, animation and colours.
 - `ui.rs`: menus, HUD, FPS counter, loadout, settings and measured loading display.
 - `audio.rs`: generated shots and menu audio.
