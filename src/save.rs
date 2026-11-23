@@ -24,6 +24,7 @@ pub struct SaveData {
     pub settings: SettingsData,
     pub weapon: usize,
     pub mode: Mode,
+    pub map: Map,
     pub career: Career,
 }
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -33,6 +34,7 @@ pub struct SettingsData {
     pub volume: f32,
     pub shadows: bool,
     pub crosshair: usize,
+    pub show_fps: bool,
 }
 impl From<&Settings> for SettingsData {
     fn from(s: &Settings) -> Self {
@@ -42,6 +44,7 @@ impl From<&Settings> for SettingsData {
             volume: s.volume,
             shadows: s.shadows,
             crosshair: s.crosshair,
+            show_fps: s.show_fps,
         }
     }
 }
@@ -52,6 +55,7 @@ impl SettingsData {
         s.volume = self.volume;
         s.shadows = self.shadows;
         s.crosshair = self.crosshair;
+        s.show_fps = self.show_fps;
     }
 }
 impl Default for SaveData {
@@ -60,6 +64,7 @@ impl Default for SaveData {
             settings: SettingsData::from(&Settings::default()),
             weapon: 0,
             mode: Mode::FreeForAll,
+            map: Map::Sector05,
             career: Career::default(),
         }
     }
@@ -70,16 +75,21 @@ impl SaveData {
         let s = &self.settings;
         let c = &self.career;
         format!(
-            "version=1\nsensitivity={}\nfov={}\nvolume={}\nshadows={}\ncrosshair={}\nweapon={}\nmode={}\nkills={}\ndeaths={}\nmatches={}\nwins={}\n",
+            "version=1\nsensitivity={}\nfov={}\nvolume={}\nshadows={}\ncrosshair={}\nfps={}\nweapon={}\nmode={}\nmap={}\nkills={}\ndeaths={}\nmatches={}\nwins={}\n",
             s.sensitivity,
             s.fov,
             s.volume,
             s.shadows,
             s.crosshair,
+            s.show_fps,
             self.weapon,
             match self.mode {
                 Mode::FreeForAll => "ffa",
                 Mode::TeamDeathmatch => "tdm",
+            },
+            match self.map {
+                Map::Sector05 => "sector05",
+                Map::Skyreach => "skyreach",
             },
             c.kills,
             c.deaths,
@@ -124,6 +134,16 @@ impl SaveData {
                         data.settings.crosshair = v as usize;
                     }
                 }
+                "fps" => {
+                    if let Ok(v) = value.parse() {
+                        data.settings.show_fps = v;
+                    }
+                }
+                "map" => match value {
+                    "sector05" => data.map = Map::Sector05,
+                    "skyreach" => data.map = Map::Skyreach,
+                    _ => {}
+                },
                 "weapon" => {
                     if let Some(v) = u().filter(|&v| (v as usize) < WEAPONS.len()) {
                         data.weapon = v as usize;
@@ -190,6 +210,7 @@ fn snapshot(settings: &Settings, arsenal: &Arsenal, session: &Session, career: &
         settings: SettingsData::from(settings),
         weapon: arsenal.selected,
         mode: session.mode,
+        map: session.map,
         career: *career,
     }
     .serialize()
@@ -237,9 +258,11 @@ mod tests {
                 volume: 0.70000005,
                 shadows: false,
                 crosshair: 4,
+                show_fps: false,
             },
             weapon: 3,
             mode: Mode::TeamDeathmatch,
+            map: Map::Skyreach,
             career: Career {
                 kills: 120,
                 deaths: 45,
@@ -265,8 +288,9 @@ mod tests {
     }
     #[test]
     fn garbage_falls_back_to_defaults() {
-        let parsed =
-            SaveData::parse("fov=NaN\nweapon=99\ncrosshair=-1\nmode=ctf\nkills=abc\nnonsense\n");
+        let parsed = SaveData::parse(
+            "fov=NaN\nmap=moon\nfps=maybe\nweapon=99\ncrosshair=-1\nmode=ctf\nkills=abc\nnonsense\n",
+        );
         assert_eq!(parsed, SaveData::default());
         assert_eq!(SaveData::parse(""), SaveData::default());
     }

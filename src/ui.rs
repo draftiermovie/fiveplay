@@ -47,6 +47,7 @@ pub struct Crosshair;
 pub enum Action {
     Play,
     Mode,
+    Map,
     Loadout,
     Settings,
     Profile,
@@ -60,6 +61,7 @@ pub enum Action {
     Shadows,
     Crosshair,
     Resolution,
+    Fps,
     Weapon(usize),
 }
 #[derive(Resource)]
@@ -474,6 +476,7 @@ fn menu_screen(
                         "TEAM DEATHMATCH"
                     };
                     button(p, ui, &format!("MODE / {mode}"), Action::Mode);
+                    button(p, ui, &format!("MAP / {}", session.map.name()), Action::Map);
                     button(p, ui, "LOADOUT", Action::Loadout);
                     button(p, ui, "SETTINGS", Action::Settings);
                     button(p, ui, "PROFILE", Action::Profile);
@@ -542,6 +545,15 @@ fn menu_screen(
                         ui,
                         &format!("SHADOWS / {}", if settings.shadows { "ON" } else { "OFF" }),
                         Action::Shadows,
+                    );
+                    button(
+                        p,
+                        ui,
+                        &format!(
+                            "FPS COUNTER / {}",
+                            if settings.show_fps { "ON" } else { "OFF" }
+                        ),
+                        Action::Fps,
                     );
                     button(p, ui, "RESOLUTION / 1080p-4K", Action::Resolution);
                     button(p, ui, "BACK", Action::Back);
@@ -743,6 +755,8 @@ pub fn setup(mut commands: Commands, assets: Res<AssetServer>) {
             .map(|(_, path)| assets.load(*path))
             .collect(),
     });
+    commands.insert_resource(crate::models::Models::load(&assets));
+    spawn_fps(&mut commands);
     commands.insert_resource(AudioBank {
         blaster: assets.load("audio/blaster.ogg"),
         blaster_repeater: assets.load("audio/blaster_repeater.ogg"),
@@ -783,8 +797,9 @@ pub fn refresh(
         for (tag, mut text) in &mut labels {
             let value = match tag.0 {
                 1 => format!(
-                    "{:03}  HP     /     {}     /     {:02} : {:02}",
+                    "{:03}  HP     /     {}     /     {}     /     {:02} : {:02}",
                     player.health.max(0.) as u32,
+                    session.map.name(),
                     if session.mode == Mode::FreeForAll {
                         "FREE FOR ALL"
                     } else {
@@ -819,18 +834,12 @@ pub fn refresh(
                     progress.done * 100 / progress.total.max(1),
                     if progress.done == progress.total {
                         "Ready to Play"
-                    } else if progress.built >= 7 {
-                        "Loading Assets"
                     } else {
-                        [
-                            "Initializing Engine",
-                            "Building Arena",
-                            "Building Arena",
-                            "Building Arena",
-                            "Building Arena",
-                            "Spawning Targets",
-                            "Lighting Sector",
-                        ][progress.built.min(6)]
+                        match progress.built {
+                            0 => "Loading Models",
+                            1 => "Spawning Targets",
+                            _ => "Loading Assets",
+                        }
                     }
                 ),
                 6 => {
@@ -933,7 +942,7 @@ pub fn interact(
                 player.0.velocity = Vec3::ZERO;
                 player.0.yaw = 0.;
                 player.0.pitch = 0.;
-                player.1.translation = Vec3::new(0., 1., 14.);
+                player.1.translation = crate::world::player_spawn(session.map);
                 let selected = arsenal.selected;
                 *arsenal = Arsenal::default();
                 arsenal.selected = selected;
@@ -953,6 +962,10 @@ pub fn interact(
                 };
                 state.0 = Screen::Loading;
             }
+            Action::Map => {
+                session.map = session.map.next();
+                state.0 = Screen::Loading;
+            }
             Action::Loadout => session.screen = Screen::Loadout,
             Action::Settings => session.screen = Screen::Settings,
             Action::Profile => session.screen = Screen::Profile,
@@ -964,7 +977,7 @@ pub fn interact(
             Action::Respawn => {
                 player.0.health = 100.;
                 player.0.velocity = Vec3::ZERO;
-                player.1.translation = Vec3::new(0., 1., 14.);
+                player.1.translation = crate::world::player_spawn(session.map);
                 let selected = arsenal.selected;
                 *arsenal = Arsenal::default();
                 arsenal.selected = selected;
@@ -1014,10 +1027,90 @@ pub fn interact(
                 };
                 window.resolution.set_physical_resolution(w, h);
             }
+            Action::Fps => {
+                settings.show_fps = !settings.show_fps;
+                state.0 = Screen::Loading;
+            }
             Action::Weapon(i) => {
                 arsenal.selected = i;
                 state.0 = Screen::Loading;
             }
         }
     }
+}
+
+/// Root of the frame-rate overlay; lives outside `UiRoot` so screen changes
+/// never rebuild it.
+#[derive(Component)]
+pub struct FpsCounter;
+#[derive(Component)]
+pub struct FpsText;
+fn spawn_fps(commands: &mut Commands) {
+    commands
+        .spawn((
+            FpsCounter,
+            Node {
+                position_type: PositionType::Absolute,
+                top: px(8),
+                right: px(10),
+                padding: UiRect::axes(px(10), px(4)),
+                border_radius: BorderRadius::all(px(6)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.01, 0.02, 0.04, 0.6)),
+            // Above menus, the HUD and nameplates.
+            GlobalZIndex(50),
+            Visibility::Hidden,
+        ))
+        .with_children(|p| {
+            p.spawn((
+                FpsText,
+                Text::new("-- FPS"),
+                TextFont {
+                    font_size: 14.0.into(),
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+            ));
+        });
+}
+/// Shows the smoothed frame rate and frame time, refreshed four times a
+/// second so the digits stay readable. Green at 60+, amber at 30+, red below.
+pub fn fps(
+    time: Res<Time>,
+    settings: Res<Settings>,
+    diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
+    mut root: Single<&mut Visibility, With<FpsCounter>>,
+    mut text: Single<(&mut Text, &mut TextColor), With<FpsText>>,
+    mut since: Local<f32>,
+) {
+    use bevy::diagnostic::FrameTimeDiagnosticsPlugin as Frames;
+    let target = if settings.show_fps {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    if **root != target {
+        **root = target;
+    }
+    *since += time.delta_secs();
+    if !settings.show_fps || *since < 0.25 {
+        return;
+    }
+    *since = 0.;
+    let Some(fps) = diagnostics.get(&Frames::FPS).and_then(|d| d.smoothed()) else {
+        return;
+    };
+    let ms = diagnostics
+        .get(&Frames::FRAME_TIME)
+        .and_then(|d| d.smoothed())
+        .unwrap_or(1000. / fps.max(1.));
+    text.0.0 = format!("{fps:.0} FPS  /  {ms:.1} MS");
+    text.1.0 = if fps >= 60. {
+        Color::srgb(0.45, 1., 0.55)
+    } else if fps >= 30. {
+        Color::srgb(1., 0.82, 0.3)
+    } else {
+        DANGER
+    };
 }

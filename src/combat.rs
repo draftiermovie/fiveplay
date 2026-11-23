@@ -15,6 +15,37 @@ pub struct Bot {
 }
 #[derive(Component)]
 pub struct Effect(pub f32);
+/// A bot's visual for one map; only the loaded map's skin is shown.
+#[derive(Component)]
+pub struct BotSkin(pub Map);
+/// Shows each bot's skin for the loaded map and bobs the flying drones.
+pub fn skins(
+    time: Res<Time>,
+    loaded: Res<crate::world::LoadedMap>,
+    bots: Query<(&Bot, &Children)>,
+    mut skins: Query<(&BotSkin, &mut Visibility, &mut Transform)>,
+) {
+    for (bot, children) in &bots {
+        for child in children.iter() {
+            let Ok((skin, mut visibility, mut transform)) = skins.get_mut(child) else {
+                continue;
+            };
+            let shown = loaded.0 == Some(skin.0);
+            let target = if shown {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+            if *visibility != target {
+                *visibility = target;
+            }
+            if shown && skin.0 == Map::Skyreach {
+                transform.translation.y =
+                    (time.elapsed_secs() * 2.6 + bot.index as f32 * 1.3).sin() * 0.09;
+            }
+        }
+    }
+}
 pub fn bots(
     mut commands: Commands,
     time: Res<Time>,
@@ -49,7 +80,8 @@ pub fn bots(
         // Hostiles close in on the player; allies follow at a short distance.
         if distance > 7. {
             let move_dir = direction;
-            let origin = tr.translation + Vec3::Y;
+            // Probe low enough to see 1 m platforms as well as walls.
+            let origin = tr.translation + Vec3::Y * 0.5;
             let clear = spatial
                 .cast_ray(
                     origin,

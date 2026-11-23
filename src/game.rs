@@ -21,10 +21,32 @@ pub enum Mode {
     FreeForAll,
     TeamDeathmatch,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Map {
+    /// The original enclosed concrete arena.
+    Sector05,
+    /// Open grass platforms built from the Kenney Platformer Kit.
+    Skyreach,
+}
+impl Map {
+    pub fn name(self) -> &'static str {
+        match self {
+            Map::Sector05 => "SECTOR 05",
+            Map::Skyreach => "SKYREACH",
+        }
+    }
+    pub fn next(self) -> Self {
+        match self {
+            Map::Sector05 => Map::Skyreach,
+            Map::Skyreach => Map::Sector05,
+        }
+    }
+}
 #[derive(Resource)]
 pub struct Session {
     pub screen: Screen,
     pub mode: Mode,
+    pub map: Map,
     pub kills: u32,
     pub deaths: u32,
     pub blue: u32,
@@ -42,6 +64,7 @@ impl Default for Session {
         Self {
             screen: Screen::Loading,
             mode: Mode::FreeForAll,
+            map: Map::Sector05,
             kills: 0,
             deaths: 0,
             blue: 0,
@@ -63,6 +86,7 @@ pub struct Settings {
     pub volume: f32,
     pub shadows: bool,
     pub crosshair: usize,
+    pub show_fps: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -72,6 +96,7 @@ impl Default for Settings {
             volume: 0.4,
             shadows: true,
             crosshair: 1,
+            show_fps: true,
         }
     }
 }

@@ -1,6 +1,7 @@
 use crate::{
     combat::{Bot, Effect, ray_sphere},
     game::*,
+    models::{Model, Models},
     player::Player,
     world::{ArenaCamera, Palette},
 };
@@ -113,6 +114,32 @@ impl Arsenal {
 }
 #[derive(Component)]
 pub struct ViewGun;
+/// The first-person model for one weapon slot.
+#[derive(Component)]
+pub struct GunSkin(pub usize);
+/// Kit model and scale for each weapon, so every slot reads differently:
+/// repeaters for the automatics, a stretched blaster for the sniper, a bulky
+/// one for the shotgun and a compact one for the sidearm.
+const VIEW_MODELS: [(Model, Vec3); 5] = [
+    (Model::BlasterRepeater, Vec3::new(0.3, 0.3, 0.3)),
+    (Model::BlasterRepeater, Vec3::new(0.26, 0.26, 0.22)),
+    (Model::Blaster, Vec3::new(0.27, 0.27, 0.46)),
+    (Model::Blaster, Vec3::new(0.36, 0.32, 0.34)),
+    (Model::Blaster, Vec3::new(0.23, 0.23, 0.23)),
+];
+/// Shows only the selected weapon's model.
+pub fn skins(arsenal: Res<Arsenal>, mut skins: Query<(&GunSkin, &mut Visibility)>) {
+    for (skin, mut visibility) in &mut skins {
+        let target = if skin.0 == arsenal.selected {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *visibility != target {
+            *visibility = target;
+        }
+    }
+}
 pub fn update(
     mut commands: Commands,
     time: Res<Time>,
@@ -127,7 +154,8 @@ pub fn update(
     camera: Single<(Entity, &Transform), With<ArenaCamera>>,
     mut bots: Query<(&mut Bot, &Transform), Without<ArenaCamera>>,
     spatial: SpatialQuery,
-    palette: Res<Palette>,
+    // Grouped: Bevy systems accept at most 16 parameters.
+    (palette, models): (Res<Palette>, Res<Models>),
     mut meshes: ResMut<Assets<Mesh>>,
     mut guns: Query<&mut Transform, (With<ViewGun>, Without<ArenaCamera>, Without<Bot>)>,
 ) {
@@ -142,26 +170,25 @@ pub fn update(
                 Visibility::Inherited,
             ))
             .with_children(|g| {
-                g.spawn((
-                    Mesh3d(meshes.add(Cuboid::new(0.12, 0.16, 0.55))),
-                    MeshMaterial3d(palette.metal.clone()),
-                    Transform::default(),
-                ));
-                g.spawn((
-                    Mesh3d(meshes.add(Cuboid::new(0.055, 0.055, 0.35))),
-                    MeshMaterial3d(palette.wall.clone()),
-                    Transform::from_xyz(0., 0.03, -0.4),
-                ));
-                g.spawn((
-                    Mesh3d(meshes.add(Cuboid::new(0.13, 0.025, 0.12))),
-                    MeshMaterial3d(palette.blue.clone()),
-                    Transform::from_xyz(0., 0.10, 0.),
-                ));
-                g.spawn((
-                    Mesh3d(meshes.add(Cuboid::new(0.07, 0.23, 0.10))),
-                    MeshMaterial3d(palette.wall.clone()),
-                    Transform::from_xyz(0., -0.15, 0.08),
-                ));
+                // One blaster per weapon; `skins` shows the selected one. The glTF
+                // models are authored facing +Z; they are turned to face -Z.
+                for (i, (model, scale)) in VIEW_MODELS.iter().enumerate() {
+                    g.spawn((
+                        GunSkin(i),
+                        // Pushed forward and angled slightly inward so the
+                        // barrel, not the back of the gun, fills the view.
+                        Transform::from_xyz(0.06, -0.08, -0.2)
+                            .with_rotation(Quat::from_euler(
+                                EulerRot::YXZ,
+                                std::f32::consts::PI + 0.32,
+                                0.03,
+                                0.,
+                            ))
+                            .with_scale(*scale),
+                        Visibility::Hidden,
+                    ))
+                    .with_children(|g| models.add(g, *model));
+                }
             });
         });
     }

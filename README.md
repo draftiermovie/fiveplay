@@ -43,21 +43,31 @@ Original placeholder WAV assets are included. Regenerate them with `./tools/gene
 | Select weapon | 1–5 / wheel |
 | Pause / back | Escape |
 
-Settings cycle through sensitivity, FOV, volume, shadows and 1080p/1440p/4K. The selected resolution is requested from the window manager; desktop limits may affect its actual size. PLAY starts a five-minute match with a preliminary score limit of 30. Health regenerates after five seconds without damage. Bots respawn after three seconds; player redeployment is manual.
+## Maps
+
+Choose the map from the main menu (**MAP /**); the choice is saved.
+
+- **Sector 05**: the original enclosed concrete arena with pillar rows and central cover.
+- **Skyreach**: an open grass arena built from the Kenney Platformer Kit models in `assets/models/`: a two-step central hill, low and high walls for cover, two-step sniper perches on the flanks, and flying drone bots.
+
+The kit models reference a shared `Textures/colormap.png`, which is not included. Without it every model gets a flat colour, and Bevy logs one `Path not found` error for the texture on startup. To use the original look, copy `Textures/colormap.png` from the Platformer Kit download into `assets/models/Textures/`. It is detected automatically.
+
+Settings cycle through crosshair, sensitivity, FOV, volume, shadows, the FPS counter and 1080p/1440p/4K. The FPS counter (top right, on by default) shows the smoothed frame rate and frame time: green at 60+ FPS, amber at 30+, red below. The selected resolution is requested from the window manager; desktop limits may affect its actual size. PLAY starts a five-minute match with a preliminary score limit of 30. Health regenerates after five seconds without damage. Bots respawn after three seconds; player redeployment is manual.
 
 ## Source map
 
 - `game.rs`: session state, settings, pause and cursor capture.
-- `world.rs`: incremental world construction, static physics, lighting and menu camera.
+- `world.rs`: map construction and switching (Sector 05, Skyreach), static physics, lighting and menu camera.
+- `models.rs`: loads the glTF kit models, flattens them to meshes and supplies their materials.
 - `player.rs`: acceleration, gravity, capsule sweeps, sprint, slide and aiming camera.
 - `weapons.rs`: weapon definitions, ammo, reload, recoil, spread, wall-occluded hitscan and effects.
 - `combat.rs`: initial bots, health/death, hit geometry and effect cleanup.
-- `ui.rs`: menus, HUD, loadout, settings and measured loading display.
+- `ui.rs`: menus, HUD, FPS counter, loadout, settings and measured loading display.
 - `audio.rs`: generated shots and menu audio.
 
 Future multiplayer must move damage, ammo and scores behind an authoritative simulation. ECS component separation supports that refactor, but current input-driven systems are not a multiplayer implementation.
 
-For a bounded graphical startup check, run `./tools/run.ps1 -SmokeTest`. It attempts menu and arena captures in the project root and exits automatically. This checks startup/rendering, not full gameplay or frame-rate targets.
+For a bounded graphical startup check, run `./tools/run.ps1 -SmokeTest`. It attempts menu, Sector 05 and Skyreach captures in the project root and exits automatically. This checks startup/rendering, not full gameplay or frame-rate targets.
 
 ## Validation
 

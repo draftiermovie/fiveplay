@@ -137,7 +137,7 @@ pub fn movement(
         }
     }
     if tr.translation.y < -10. {
-        tr.translation = Vec3::new(0., 1., 14.);
+        tr.translation = crate::world::player_spawn(session.map);
         p.velocity = Vec3::ZERO;
         p.slide = 0.;
     }
