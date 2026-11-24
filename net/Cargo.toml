@@ -1,0 +1,7 @@
+[package]
+name = "fiveplay-net"
+version = "0.1.0"
+edition = "2024"
+description = "Wire protocol and shared match rules for FivePlay multiplayer"
+
+[dependencies]

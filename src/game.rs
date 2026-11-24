@@ -154,6 +154,7 @@ pub fn input(
     mut career: ResMut<crate::save::Career>,
     mut board: ResMut<crate::score::Scoreboard>,
     pad: Res<crate::gamepad::Pad>,
+    net: Res<crate::net::Net>,
 ) {
     board.tick(time.delta_secs());
     session.elapsed += time.delta_secs();
@@ -189,7 +190,8 @@ pub fn input(
         cursor.grab_mode = grab;
     }
     // The match (clock, limits) keeps running while the player is dead.
-    if locked || session.screen == Screen::Dead {
+    // Online, the server runs the clock and ends the match (see `net`).
+    if (locked || session.screen == Screen::Dead) && !net.active() {
         session.remaining = (session.remaining - time.delta_secs()).max(0.);
         if board.finished(&session) {
             session.screen = Screen::Results;

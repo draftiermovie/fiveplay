@@ -2860,7 +2860,12 @@ version = "0.1.0"
 dependencies = [
  "avian3d",
  "bevy",
+ "fiveplay-net",
 ]
+
+[[package]]
+name = "fiveplay-net"
+version = "0.1.0"
 
 [[package]]
 name = "fixedbitset"

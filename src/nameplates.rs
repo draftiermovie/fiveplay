@@ -86,7 +86,7 @@ pub fn update(
     camera: Single<(&Camera, &Transform), With<ArenaCamera>>,
     bots: Query<(&Bot, &Transform), Without<ArenaCamera>>,
     mut plates: Query<(Entity, &Nameplate, &mut Node, &mut Visibility, &Children)>,
-    mut names: Query<&mut TextColor, With<PlateName>>,
+    mut names: Query<(&mut TextColor, &mut Text), With<PlateName>>,
     mut fills: Query<(&mut Node, &mut BackgroundColor), (With<PlateFill>, Without<Nameplate>)>,
     tracks: Query<&Children, Without<Nameplate>>,
     spatial: SpatialQuery,
@@ -131,8 +131,13 @@ pub fn update(
         let alpha = 1. - ((distance - FADE_START) / (MAX_DISTANCE - FADE_START)).clamp(0., 1.);
         let tint = if ally { ALLY } else { HOSTILE }.with_alpha(alpha);
         for child in children.iter() {
-            if let Ok(mut color) = names.get_mut(child) {
+            if let Ok((mut color, mut text)) = names.get_mut(child) {
                 color.0 = tint;
+                // Online player names replace the bot callsigns.
+                let name = crate::score::name(bot.id());
+                if text.0 != name {
+                    text.0 = name;
+                }
             }
             let Ok(track) = tracks.get(child) else {
                 continue;

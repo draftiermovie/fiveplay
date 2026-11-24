@@ -1,0 +1,7 @@
+target
+**/target
+dist
+assets
+*.png
+*.log
+.git

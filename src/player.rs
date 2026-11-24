@@ -87,6 +87,7 @@ pub fn movement(
     mut camera: Single<(&mut Transform, &mut Projection), With<ArenaCamera>>,
     mut jump_flip: Local<u8>,
     pad: Res<crate::gamepad::Pad>,
+    mut net: ResMut<crate::net::Net>,
 ) {
     if session.screen != Screen::Playing {
         return;
@@ -183,6 +184,8 @@ pub fn movement(
         }
     }
     if tr.translation.y < -10. {
+        // Online the server counts the fall as a death.
+        net.queue(fiveplay_net::ClientMsg::Fall);
         tr.translation = crate::world::player_spawn(session.map, session.mode);
         p.velocity = Vec3::ZERO;
         p.slide = 0.;

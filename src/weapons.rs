@@ -8,6 +8,7 @@ use crate::{
 };
 use avian3d::prelude::*;
 use bevy::prelude::*;
+use fiveplay_net::ClientMsg;
 #[derive(Clone, Copy)]
 pub struct Weapon {
     pub name: &'static str,
@@ -113,6 +114,16 @@ impl Arsenal {
         ((self.seed >> 32) as u32 as f32 / u32::MAX as f32) * 2. - 1.
     }
 }
+/// Hit zone reported to the server: 0 head, 1 body, 2 legs.
+pub fn zone(head: bool, multiplier: f32) -> u8 {
+    if head {
+        0
+    } else if multiplier >= 1. {
+        1
+    } else {
+        2
+    }
+}
 #[derive(Component)]
 pub struct ViewGun;
 /// The first-person model for one weapon slot.
@@ -156,12 +167,13 @@ pub fn update(
     mut bots: Query<(&mut Bot, &Transform), Without<ArenaCamera>>,
     spatial: SpatialQuery,
     // Grouped: Bevy systems accept at most 16 parameters.
-    (palette, models, soldiers, pad, mut rumble): (
+    (palette, models, soldiers, pad, mut rumble, mut net): (
         Res<Palette>,
         Res<Models>,
         Res<crate::soldier::SoldierKit>,
         Res<crate::gamepad::Pad>,
         MessageWriter<bevy::input::gamepad::GamepadRumbleRequest>,
+        ResMut<crate::net::Net>,
     ),
     mut meshes: ResMut<Assets<Mesh>>,
     mut guns: Query<&mut Transform, (With<ViewGun>, Without<ArenaCamera>, Without<Bot>)>,
@@ -328,7 +340,20 @@ pub fn update(
                 }
             }
         }
-        if let Some((id, mult, head)) = victim {
+        if let Some((id, mult, head)) = victim
+            && net.active()
+        {
+            // Online the server decides: report the hit and show the marker.
+            if let Some(server_id) = net.server_id(id) {
+                net.queue(ClientMsg::Hit {
+                    victim: server_id,
+                    weapon: index as u8,
+                    zone: zone(head, mult),
+                });
+                hurt = true;
+                session.hit = 0.15;
+            }
+        } else if let Some((id, mult, head)) = victim {
             hurt = true;
             for (mut bot, _) in &mut bots {
                 if bot.index == id {
@@ -352,6 +377,10 @@ pub fn update(
         let end = origin + direction * nearest;
         let start = origin + base * Vec3::new(0.25, -0.2, -0.9);
         let length = (end - start).length();
+        net.queue(ClientMsg::Shot {
+            from: start.to_array(),
+            to: end.to_array(),
+        });
         commands.spawn((
             Mesh3d(meshes.add(Cuboid::new(0.015, 0.015, length))),
             MeshMaterial3d(palette.blue.clone()),

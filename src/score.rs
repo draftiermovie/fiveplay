@@ -27,7 +27,25 @@ pub struct Scoreboard {
     pub killed_by: Option<usize>,
 }
 
+/// Online names and teams (see `net`), replacing the bot defaults.
+pub struct Roster {
+    pub names: [String; COMBATANTS],
+    pub teams: [usize; COMBATANTS],
+}
+static ROSTER: std::sync::RwLock<Option<Roster>> = std::sync::RwLock::new(None);
+pub fn set_roster(roster: Option<Roster>) {
+    if let Ok(mut slot) = ROSTER.write() {
+        *slot = roster;
+    }
+}
+fn roster<T>(f: impl FnOnce(&Roster) -> T) -> Option<T> {
+    ROSTER.read().ok()?.as_ref().map(f)
+}
+
 pub fn name(id: usize) -> String {
+    if let Some(name) = roster(|r| r.names[id].clone()) {
+        return name;
+    }
     if id == PLAYER {
         "YOU".into()
     } else {
@@ -35,6 +53,9 @@ pub fn name(id: usize) -> String {
     }
 }
 pub fn team(id: usize) -> usize {
+    if let Some(team) = roster(|r| r.teams[id]) {
+        return team;
+    }
     if id == PLAYER || (id - 1) % 2 == 1 {
         BLUE
     } else {

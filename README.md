@@ -9,7 +9,7 @@ A Windows-first Rust FPS project using Bevy 0.20.1 and Avian3D 0.8.0.
 3. **Presentation** — unique authored weapon meshes, rigged reload and firing animation, spatial audio, final music, centered loading branding and fades, scalable menu layouts, settings persistence and key rebinding.
 4. **Performance and multiplayer** — profile 1080p/1440p/4K on named hardware, quality presets and frame-time instrumentation; authoritative server, prediction, reconciliation, lag compensation and anti-cheat boundaries.
 
-This is a staged foundation, not a finished commercial shooter. No network transport or account backend exists. Character models are procedural (built from primitives) rather than authored, rigged meshes. Crouching lowers the view but currently keeps the standing collision capsule. No 60 FPS claim is made before hardware profiling.
+This is a staged foundation, not a finished commercial shooter. Online play uses a small dedicated server (see Multiplayer); there are no accounts. Character models are procedural (built from primitives) rather than authored, rigged meshes. Crouching lowers the view but currently keeps the standing collision capsule. No 60 FPS claim is made before hardware profiling.
 
 ## Run
 
@@ -19,13 +19,21 @@ Install a current stable Rust toolchain and Visual Studio C++ build tools, then 
 cargo run --release
 ```
 
-The first compile builds Bevy and its graphics stack and can take several minutes. Keep the `assets` directory next to the working directory when running the executable. Requires a graphics driver compatible with Bevy's current wgpu backend.
+The first compile builds Bevy and its graphics stack and can take several minutes. Assets are compiled into the executable, so it runs without the `assets` folder; set `FIVEPLAY_ASSETS=disk` to load them from `assets/` instead while editing them. Requires a graphics driver compatible with Bevy's current wgpu backend.
 
 ```powershell
 cargo check --locked
 cargo test --locked
 cargo fmt --check
 ```
+
+### Single-file exe for players
+
+```powershell
+./tools/build-exe.ps1 -Server play.example.com
+```
+
+This produces `dist/FivePlay.exe`: everything (models, audio, UI images) is inside, and the C runtime is linked statically, so players need nothing but that one file on a 64-bit Windows PC with a DirectX 12/Vulkan-capable GPU. `-Server` is optional and pre-fills the server address for **PLAY ONLINE**; without it players type the address once (it is saved). The release build has no console window. It uses its own `target/dist` folder, so the first run compiles Bevy again (roughly 25–30 minutes); later runs take seconds.
 
 Original placeholder WAV assets are included. Regenerate them with `./tools/generate_audio.ps1` (Windows PowerShell) or `python tools/generate_audio.py` if Python is installed.
 
@@ -65,6 +73,35 @@ Xbox, PlayStation (DualShock 4, DualSense), Nintendo Switch Pro and most generic
 
 PLAY (and PLAY AGAIN) opens a vote between three map + mode options, each shown as a card with a screenshot of the map and its name and mode on top. You have 5 seconds: click a card, press 1-3, or use a controller. The six bots vote at random moments. Votes stay hidden until everyone has voted (or time runs out); then each card shows who picked it with small icons in its bottom-left corner (YOU, and each bot's number in its colour), the winner is outlined in gold, and ties are settled at random. The screen fades to black showing the winning map and mode, loads it, and fades into the match. Both maps always appear among the three options. The card images live in `assets/ui/maps/`.
 
+## Multiplayer
+
+**Playing:** on the main menu click **SERVER /** and type the server's address (`host` or `host:port`; the default port is 7777), press Enter, then **PLAY ONLINE**. `FivePlay.exe --connect host[:port]` joins directly. Your name is your Windows user name (saved as `name=` in the save file, where it can be changed). Up to six players per server, in Free For All or Team Deathmatch; the server picks the map and mode from its rotation, runs five-minute matches and starts the next one 12 seconds after the results. Your own team always shows as Blue. Leaving to the main menu disconnects.
+
+**How it works:** a dedicated server (`server/`, plain Rust with no dependencies besides the shared protocol crate `net/`) talks to clients over UDP. Clients move their own player and report hits; the server owns health, kills, deaths, team scores, the clock, spawn points and respawns, and checks every reported hit (both alive, enemies, within weapon range, within the weapon's fire rate) before applying damage. Remote players appear as the soldier avatars the bots normally use, with name and health plates, and their shots show as tracers. Bots are not in online matches. A client of a different protocol version is told to update.
+
+**Limits of this first stage:** movement is client-authoritative and hits are client-reported (validated, not re-simulated), so a modified client could still cheat; there is no lag compensation, prediction or reconciliation yet; Capture the Flag and King of the Hill are offline only.
+
+### Hosting on Dokploy
+
+1. Push this repository to a Git provider Dokploy can read.
+2. In Dokploy create a **Compose** service from the repository, compose path `./docker-compose.yml`, and deploy. Only `net/` and `server/` are built (a minute or so; no Bevy, no GPU).
+3. Open **UDP port 7777** in the host's firewall / cloud security group. Game traffic is UDP and goes straight to the container, not through Dokploy's HTTP proxy, so players connect to the server's IP or a DNS name pointing at it.
+4. Optional: add a Dokploy **domain** for the `fiveplay` service on container port **8080** to get an HTTPS status page (JSON with map, mode, phase and players). The container's health check uses the same port.
+5. Build the client with `./tools/build-exe.ps1 -Server your.domain.or.ip` and send players `dist/FivePlay.exe`.
+
+Server settings (Dokploy **Environment** tab or `.env`):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `FIVEPLAY_ROTATION` | `sector05:ffa,skyreach:ffa,sector05:tdm,skyreach:tdm` | Maps (`sector05`, `skyreach`) and modes (`ffa`, `tdm`) played in turn |
+| `FIVEPLAY_MATCH_SECONDS` | `300` | Match length |
+| `FIVEPLAY_MAX_PLAYERS` | `6` | 1–6 |
+| `FIVEPLAY_PORT` | `7777` | Published UDP port on the host |
+
+Without Dokploy: `docker compose up -d --build`, or run the binary directly with `cargo run --release --manifest-path server/Cargo.toml` (it also runs on Windows).
+
+**Testing locally:** start the server as above, then `./tools/run.ps1` and connect to `127.0.0.1`. For an unattended check, run two clients with `--smoke-test --connect 127.0.0.1` (one with `FIVEPLAY_TEST_SHOOT=1`): each joins, logs the players it sees, the shooter reports a hit, the victim dies and redeploys, and both save `online-preview.png` and exit.
+
 ## Modes and bots
 
 - **Free For All**: every combatant (you and six bots) fights everyone else. First to 20 kills wins; you win only with sole first place.
@@ -95,7 +132,7 @@ Choose the map from the main menu (**MAP /**); the choice is saved.
 - **Sector 05**: the original enclosed concrete arena with pillar rows and central cover.
 - **Skyreach**: an open grass arena built from the Kenney Platformer Kit models in `assets/models/`: a two-step central hill, low and high walls for cover, two-step sniper perches on the flanks, and patrol drones circling overhead.
 
-The kit models reference a shared `Textures/colormap.png`, which is not included. Without it every model gets a flat colour, and Bevy logs one `Path not found` error for the texture on startup. To use the original look, copy `Textures/colormap.png` from the Platformer Kit download into `assets/models/Textures/`. It is detected automatically.
+The kit models reference a shared `Textures/colormap.png`, which is not included. Without it every model gets a flat colour, and Bevy logs one `Path not found` error for the texture on startup. To use the original look, copy `Textures/colormap.png` from the Platformer Kit download into `assets/models/Textures/` and rebuild (assets are embedded at build time), or run with `FIVEPLAY_ASSETS=disk`.
 
 Settings has sliders for mouse sensitivity, field of view and audio volume (drag, click the rail, or use the arrow keys), and toggles for fullscreen (borderless), shadows and the FPS counter, plus crosshair and 1080p/1440p/4K window size. Everything is saved. Settings is also reachable from the pause menu without leaving the match; Back or Escape returns to the pause menu. The FPS counter (top right, on by default) shows the smoothed frame rate and frame time: green at 60+ FPS, amber at 30+, red below. The selected resolution is requested from the window manager; desktop limits may affect its actual size. PLAY starts a five-minute match. Health regenerates after five seconds without damage. Bots respawn after three seconds; the player redeploys from the spectator screen after three seconds.
 
@@ -117,8 +154,10 @@ Settings has sliders for mouse sensitivity, field of view and audio volume (drag
 - `soldier.rs`: the procedural soldier model, first-person arms, animation and colours.
 - `ui.rs`: menus, HUD, FPS counter, loadout, settings and measured loading display.
 - `audio.rs`: generated shots and menu audio.
-
-Future multiplayer must move damage, ammo and scores behind an authoritative simulation. ECS component separation supports that refactor, but current input-driven systems are not a multiplayer implementation.
+- `net.rs`: online play: connecting, server snapshots driving the remote avatars, standings and the local player's health, death and respawn.
+- `embedded.rs` + `build.rs`: compiles `assets/` into the executable.
+- `net/`: the UDP wire protocol and the rules shared with the server (weapon numbers, hit zones, spawn points).
+- `server/`: the dedicated server (match simulation in `game.rs`, sockets and status page in `main.rs`) and its Dockerfile; `docker-compose.yml` deploys it.
 
 For a bounded graphical startup check, run `./tools/run.ps1 -SmokeTest`. It attempts menu, Sector 05 and Skyreach captures in the project root and exits automatically. This checks startup/rendering, not full gameplay or frame-rate targets.
 

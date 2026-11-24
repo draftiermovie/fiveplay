@@ -27,6 +27,9 @@ pub struct SaveData {
     pub mode: Mode,
     pub map: Map,
     pub career: Career,
+    /// Multiplayer server address and player name.
+    pub server: String,
+    pub name: String,
 }
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct SettingsData {
@@ -79,6 +82,8 @@ impl Default for SaveData {
             mode: Mode::FreeForAll,
             map: Map::Sector05,
             career: Career::default(),
+            server: String::new(),
+            name: String::new(),
         }
     }
 }
@@ -115,6 +120,12 @@ impl SaveData {
         out.push_str(&format!(
             "pad_sensitivity={}\npad_invert={}\n",
             s.pad_sensitivity, s.pad_invert
+        ));
+        out.push_str(&format!(
+            "server={}
+name={}
+",
+            self.server, self.name
         ));
         for bind in Bind::ALL {
             if let Some(id) = key_id(s.bindings.get(bind)) {
@@ -203,6 +214,12 @@ impl SaveData {
                     "koth" => data.mode = Mode::KingOfTheHill,
                     _ => {}
                 },
+                "server" => {
+                    if value.len() <= 96 && value.chars().all(|c| c.is_ascii_graphic()) {
+                        data.server = value.to_string();
+                    }
+                }
+                "name" if !value.is_empty() => data.name = fiveplay_net::clean_name(value),
                 "kills" => data.career.kills = u().unwrap_or(data.career.kills),
                 "deaths" => data.career.deaths = u().unwrap_or(data.career.deaths),
                 "matches" => data.career.matches = u().unwrap_or(data.career.matches),
@@ -254,13 +271,21 @@ fn write(text: &str) {
     }
 }
 
-fn snapshot(settings: &Settings, arsenal: &Arsenal, session: &Session, career: &Career) -> String {
+fn snapshot(
+    settings: &Settings,
+    arsenal: &Arsenal,
+    session: &Session,
+    career: &Career,
+    net: &crate::net::Net,
+) -> String {
     SaveData {
         settings: SettingsData::from(settings),
         weapon: arsenal.selected,
         mode: session.mode,
         map: session.map,
         career: *career,
+        server: net.address.clone(),
+        name: net.name.clone(),
     }
     .serialize()
 }
@@ -273,6 +298,7 @@ pub fn autosave(
     session: Res<Session>,
     career: Res<Career>,
     options: Res<RunOptions>,
+    net: Res<crate::net::Net>,
     mut exits: MessageReader<AppExit>,
     mut last: Local<Option<String>>,
 ) {
@@ -280,10 +306,11 @@ pub fn autosave(
     if options.smoke_test || session.screen == Screen::Loading {
         return;
     }
-    if session.screen == Screen::Playing && !exiting {
+    // Online matches have no pause, so stats are saved as they change.
+    if session.screen == Screen::Playing && !exiting && !net.active() {
         return;
     }
-    let text = snapshot(&settings, &arsenal, &session, &career);
+    let text = snapshot(&settings, &arsenal, &session, &career, &net);
     match last.as_deref() {
         // First pass after loading just records the baseline.
         None => *last = Some(text),
@@ -327,6 +354,8 @@ mod tests {
                 matches: 9,
                 wins: 6,
             },
+            server: "play.example.com:7777".into(),
+            name: "ACE".into(),
         };
         assert_eq!(SaveData::parse(&data.serialize()), data);
     }

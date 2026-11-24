@@ -1,11 +1,15 @@
+// Distribution builds (tools/build-exe.ps1) run without a console window.
+#![cfg_attr(fiveplay_dist, windows_subsystem = "windows")]
 mod ai;
 mod audio;
 mod combat;
 mod controls;
+mod embedded;
 mod game;
 mod gamepad;
 mod models;
 mod nameplates;
+mod net;
 mod objective;
 mod player;
 mod save;
@@ -30,7 +34,7 @@ fn main() {
     // Pin the asset root to the first ancestor of the executable that contains an
     // `assets/` folder so loading works both under `cargo run` and when the
     // executable ships next to `assets/`.
-    if std::env::var("BEVY_ASSET_ROOT").is_err() {
+    if embedded::from_disk() && std::env::var("BEVY_ASSET_ROOT").is_err() {
         if let Some(exe_dir) = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
@@ -51,8 +55,30 @@ fn main() {
     session.map = saved.map;
     let mut arsenal = weapons::Arsenal::default();
     arsenal.selected = saved.weapon;
+    // Server: `--connect host[:port]`, else the saved one, else the one baked
+    // in at build time (FIVEPLAY_DEFAULT_SERVER), else FIVEPLAY_SERVER.
+    let args: Vec<String> = std::env::args().collect();
+    let connect = args
+        .iter()
+        .position(|a| a == "--connect")
+        .and_then(|i| args.get(i + 1).cloned());
+    let address = connect
+        .clone()
+        .or_else(|| Some(saved.server.clone()).filter(|s| !s.is_empty()))
+        .or_else(|| option_env!("FIVEPLAY_DEFAULT_SERVER").map(str::to_string))
+        .or_else(|| std::env::var("FIVEPLAY_SERVER").ok())
+        .unwrap_or_default();
+    let name = Some(saved.name.clone())
+        .filter(|n| !n.is_empty())
+        .or_else(|| std::env::var("USERNAME").ok())
+        .or_else(|| std::env::var("USER").ok())
+        .unwrap_or_default();
+    let mut net = net::Net::new(address, name);
+    net.auto_connect = connect.is_some();
 
     let mut app = App::new();
+    // Assets are compiled into the executable (see `embedded`).
+    embedded::install(&mut app);
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "FIVEPLAY".into(),
@@ -83,6 +109,7 @@ fn main() {
     .init_resource::<gamepad::Pad>()
     .init_resource::<gamepad::PadFocus>()
     .init_resource::<vote::Vote>()
+    .insert_resource(net)
     .add_systems(
         Startup,
         (
@@ -106,6 +133,7 @@ fn main() {
                 ai::build_nav,
                 world::build,
                 ui::capture_key,
+                net::edit_address,
                 game::input,
                 gamepad::menu,
                 ui::interact,
@@ -115,6 +143,7 @@ fn main() {
                 player::movement,
                 weapons::update,
                 ai::bots,
+                net::update,
                 objective::update,
                 spectate::camera,
             )
@@ -142,7 +171,9 @@ fn main() {
             .chain(),
     )
     .add_systems(Last, save::autosave);
-    if smoke {
+    if smoke && connect.is_some() {
+        app.add_systems(Update, online_smoke_test);
+    } else if smoke {
         app.add_systems(Update, smoke_test);
     }
     app.run();
@@ -224,5 +255,116 @@ fn smoke_test(
             );
         }
         exit.write(AppExit::Success);
+    }
+}
+
+/// `--smoke-test --connect <server>`: joins the server, logs what it sees,
+/// redeploys after dying and exits after `FIVEPLAY_TEST_SECONDS` (default 14)
+/// in the match, saving `online-preview.png` just before. With
+/// `FIVEPLAY_TEST_SHOOT` set it reports a sniper headshot on the first enemy
+/// three seconds in (exercises the server's hit, kill and respawn path).
+fn online_smoke_test(
+    mut commands: Commands,
+    time: Res<Time>,
+    session: Res<Session>,
+    mut net: ResMut<net::Net>,
+    mut actions: ResMut<ui::Actions>,
+    spectate: Res<spectate::Spectate>,
+    bots: Query<(&combat::Bot, &Transform, &Visibility)>,
+    player: Single<&player::Player>,
+    mut joined: Local<Option<f32>>,
+    mut stage: Local<u8>,
+    mut last_screen: Local<Option<Screen>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+    let t = time.elapsed_secs();
+    if *last_screen != Some(session.screen) {
+        *last_screen = Some(session.screen);
+        info!(
+            "online test: screen {:?}, link {:?}, health {:.0}",
+            screen_name(session.screen),
+            net.link,
+            player.health
+        );
+    }
+    if joined.is_none() {
+        if net.link == net::Link::Online && session.screen == Screen::Playing {
+            *joined = Some(t);
+        } else if t > 45. {
+            error!("online test: never joined ({})", net.status);
+            exit.write(AppExit::error());
+        }
+        return;
+    }
+    let since = t - joined.unwrap();
+    let total: f32 = std::env::var("FIVEPLAY_TEST_SECONDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(14.);
+    if session.screen == Screen::Dead && spectate.ready() {
+        actions.0.push(ui::Action::Respawn);
+    }
+    let report = |label: &str| {
+        for (bot, tr, vis) in &bots {
+            if bot.health > 0. && *vis != Visibility::Hidden {
+                info!(
+                    "online test {label}: sees {} hp {:.0} at ({:.1}, {:.1}, {:.1}) yaw {:.2} enemy {}",
+                    score::name(bot.id()),
+                    bot.health,
+                    tr.translation.x,
+                    tr.translation.y,
+                    tr.translation.z,
+                    bot.yaw,
+                    score::enemies(session.mode, score::PLAYER, bot.id())
+                );
+            }
+        }
+    };
+    if *stage == 0 && since > 2. {
+        *stage = 1;
+        report("start");
+    } else if *stage == 1 && since > 3. {
+        *stage = 2;
+        if std::env::var("FIVEPLAY_TEST_SHOOT").is_ok() {
+            let target = bots
+                .iter()
+                .find(|(b, _, _)| {
+                    b.health > 0. && score::enemies(session.mode, score::PLAYER, b.id())
+                })
+                .and_then(|(b, _, _)| net.server_id(b.index));
+            info!("online test: shooting server player {target:?}");
+            if let Some(victim) = target {
+                net.queue(fiveplay_net::ClientMsg::Hit {
+                    victim,
+                    weapon: 2,
+                    zone: 0,
+                });
+            }
+        }
+    } else if *stage == 2 && since > total - 2. {
+        *stage = 3;
+        report("end");
+        info!(
+            "online test: kills {} deaths {} mode {:?} map {:?}",
+            session.kills, session.deaths, session.mode, session.map
+        );
+        let file = std::env::var("FIVEPLAY_TEST_SHOT").unwrap_or("online-preview.png".into());
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(file));
+    } else if *stage == 3 && since > total {
+        exit.write(AppExit::Success);
+    }
+}
+fn screen_name(screen: Screen) -> &'static str {
+    match screen {
+        Screen::Loading => "loading",
+        Screen::Menu => "menu",
+        Screen::Playing => "playing",
+        Screen::Dead => "dead",
+        Screen::Results => "results",
+        Screen::Paused => "paused",
+        _ => "other",
     }
 }

@@ -1,0 +1,25 @@
+# FivePlay dedicated server for Dokploy (Compose service) or plain Docker.
+#
+# Dokploy: create a Compose service pointing at this repository, compose path
+# `./docker-compose.yml`, and deploy. Players connect to your server's
+# address (IP or a DNS name pointing at it) on UDP 7777. Optionally add a
+# Dokploy domain for the `fiveplay` service on port 8080 to get an HTTPS
+# status page (JSON: map, mode, players).
+#
+# Open UDP 7777 in your server's firewall / cloud security group: game
+# traffic is UDP and does not go through Dokploy's HTTP proxy.
+services:
+  fiveplay:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${FIVEPLAY_PORT:-7777}:7777/udp"
+    expose:
+      - "8080"
+    environment:
+      # Maps and modes played in turn: sector05 | skyreach, ffa | tdm.
+      FIVEPLAY_ROTATION: ${FIVEPLAY_ROTATION:-sector05:ffa,skyreach:ffa,sector05:tdm,skyreach:tdm}
+      FIVEPLAY_MATCH_SECONDS: ${FIVEPLAY_MATCH_SECONDS:-300}
+      FIVEPLAY_MAX_PLAYERS: ${FIVEPLAY_MAX_PLAYERS:-6}

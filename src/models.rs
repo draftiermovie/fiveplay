@@ -140,11 +140,7 @@ impl Models {
 
 /// Checked up front so a missing optional texture is not requested at all.
 fn texture_present() -> bool {
-    let root = std::env::var_os("BEVY_ASSET_ROOT")
-        .or_else(|| std::env::var_os("CARGO_MANIFEST_DIR"))
-        .map(std::path::PathBuf::from)
-        .unwrap_or_default();
-    root.join("assets").join(TEXTURE).is_file()
+    crate::embedded::exists(TEXTURE)
 }
 
 /// A file counts as settled once it and its dependencies finished loading, or

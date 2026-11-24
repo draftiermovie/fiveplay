@@ -79,6 +79,10 @@ pub enum Action {
     ResetControls,
     Fps,
     Weapon(usize),
+    /// Connect to the server address shown on the main menu.
+    Online,
+    /// Start or finish typing the server address.
+    EditServer,
 }
 #[derive(Resource)]
 pub struct UiState(pub Screen);
@@ -462,6 +466,7 @@ fn menu_screen(
     rebind: &Rebind,
     pad: &crate::gamepad::Pad,
     vote: &crate::vote::Vote,
+    net: &crate::net::Net,
 ) {
     let screen = session.screen;
     let title = screen_title(screen, session, board);
@@ -522,6 +527,20 @@ fn menu_screen(
                 column_panel(p, &ui.panel_blue, 32., 38., |p| {
                     text(p, "01 / READY TO DEPLOY", 13., SKY);
                     primary_button(p, ui, "PLAY", Action::Play);
+                    button(p, ui, "PLAY ONLINE", Action::Online);
+                    let cursor = if net.editing { "_" } else { "" };
+                    let address = if net.address.is_empty() && !net.editing {
+                        "CLICK TO ENTER".to_string()
+                    } else {
+                        net.address.to_uppercase()
+                    };
+                    button(
+                        p,
+                        ui,
+                        &format!("SERVER / {address}{cursor}"),
+                        Action::EditServer,
+                    );
+                    label(p, "", 13., SKY, 12);
                     let mode = session.mode.name();
                     button(p, ui, &format!("MODE / {mode}"), Action::Mode);
                     button(p, ui, &format!("MAP / {}", session.map.name()), Action::Map);
@@ -750,7 +769,11 @@ fn menu_screen(
                     };
                     text(p, &summary, 17., Color::WHITE);
                     standings_table(p);
-                    primary_button(p, ui, "PLAY AGAIN", Action::Play);
+                    if net.active() {
+                        text(p, "NEXT MATCH STARTS SHORTLY", 15., SKY);
+                    } else {
+                        primary_button(p, ui, "PLAY AGAIN", Action::Play);
+                    }
                     button(p, ui, "MAIN MENU", Action::Back);
                 });
             }
@@ -1040,13 +1063,14 @@ pub fn refresh(
     mut labels: Query<(&Label, &mut Text)>,
     mut bars: Query<&mut Node, With<LoadingBar>>,
     mut reticles: Query<(&mut ImageNode, &mut UiTransform), With<Crosshair>>,
-    (board, rebind, objective, spectate, pad, vote): (
+    (board, rebind, objective, spectate, pad, vote, net): (
         Res<Scoreboard>,
         Res<Rebind>,
         Res<crate::objective::Objective>,
         Res<crate::spectate::Spectate>,
         Res<crate::gamepad::Pad>,
         Res<crate::vote::Vote>,
+        Res<crate::net::Net>,
     ),
 ) {
     let screen = session.screen;
@@ -1134,6 +1158,7 @@ pub fn refresh(
                 8 => spectate.focus_line(&settings, &pad),
                 9 => spectate.redeploy_line(&settings, &pad),
                 11 => vote.status(&pad),
+                12 => net.status.clone(),
                 10 => {
                     if pad.active {
                         pad.style.help()
@@ -1210,6 +1235,7 @@ pub fn refresh(
                     &rebind,
                     &pad,
                     &vote,
+                    &net,
                 );
             }
         });
@@ -1225,16 +1251,19 @@ pub fn interact(
     mut window: Single<&mut Window>,
     mut exit: MessageWriter<AppExit>,
     mut bots: Query<(&mut crate::combat::Bot, &mut Transform, &mut Visibility), Without<Player>>,
-    (mut board, mut rebind, mut objective, mut spectate, mut vote): (
+    (mut board, mut rebind, mut objective, mut spectate, mut vote, mut net): (
         ResMut<Scoreboard>,
         ResMut<Rebind>,
         ResMut<crate::objective::Objective>,
         ResMut<crate::spectate::Spectate>,
         ResMut<crate::vote::Vote>,
+        ResMut<crate::net::Net>,
     ),
 ) {
     for action in actions.0.drain(..) {
         match action {
+            // Online, the server starts every match.
+            Action::Play if net.active() => {}
             Action::Play => {
                 let seed = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -1324,6 +1353,11 @@ pub fn interact(
                 if !spectate.ready() {
                     continue;
                 }
+                if net.active() {
+                    // The server picks the spawn; `net` redeploys on its reply.
+                    net.queue(fiveplay_net::ClientMsg::Respawn);
+                    continue;
+                }
                 *spectate = default();
                 session.damage = 0.;
                 player.0.redeploy();
@@ -1361,6 +1395,14 @@ pub fn interact(
             }
             Action::Fps => {
                 settings.show_fps = !settings.show_fps;
+                state.0 = Screen::Loading;
+            }
+            Action::Online => {
+                net.connect();
+                state.0 = Screen::Loading;
+            }
+            Action::EditServer => {
+                net.editing = !net.editing;
                 state.0 = Screen::Loading;
             }
             Action::Weapon(i) => {
