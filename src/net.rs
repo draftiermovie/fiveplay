@@ -506,15 +506,15 @@ pub fn update(
             net.results_counted = false;
             net.seen = (0, 0);
             net.slots = [None; SLOTS];
-            session.mode = if snap.mode == proto::MODE_TDM {
-                Mode::TeamDeathmatch
-            } else {
-                Mode::FreeForAll
+            session.mode = match snap.mode {
+                proto::MODE_TDM => Mode::TeamDeathmatch,
+                proto::MODE_GUN => Mode::GunGame,
+                _ => Mode::FreeForAll,
             };
-            session.map = if snap.map == proto::MAP_SKYREACH {
-                Map::Skyreach
-            } else {
-                Map::Sector05
+            session.map = match snap.map {
+                proto::MAP_SKYREACH => Map::Skyreach,
+                proto::MAP_FOUNDRY => Map::Foundry,
+                _ => Map::Sector05,
             };
         }
         if net.link == Link::Joining && loaded.0 == Some(session.map) {

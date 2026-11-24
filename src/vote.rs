@@ -46,13 +46,6 @@ pub struct Vote {
     seed: u64,
 }
 
-const MODES: [Mode; 4] = [
-    Mode::FreeForAll,
-    Mode::TeamDeathmatch,
-    Mode::CaptureTheFlag,
-    Mode::KingOfTheHill,
-];
-
 impl Vote {
     fn rand(&mut self) -> f32 {
         self.seed = self
@@ -64,24 +57,23 @@ impl Vote {
     fn pick(&mut self, n: usize) -> usize {
         ((self.rand() * n as f32) as usize).min(n - 1)
     }
-    /// Starts a vote: both maps appear at least once, all three options differ.
+    /// Starts a vote: one option per map, each with a random mode, and no
+    /// mode offered twice.
     pub fn begin(&mut self, seed: u64) {
         *self = Self {
             seed: seed | 1,
             ..default()
         };
-        let a = (Map::Sector05, MODES[self.pick(4)]);
-        let b = (Map::Skyreach, MODES[self.pick(4)]);
-        let mut c = a;
-        while c == a || c == b {
-            let map = if self.rand() < 0.5 {
-                Map::Sector05
-            } else {
-                Map::Skyreach
-            };
-            c = (map, MODES[self.pick(4)]);
+        let mut modes = Mode::ALL;
+        for i in (1..modes.len()).rev() {
+            let j = self.pick(i + 1);
+            modes.swap(i, j);
         }
-        let mut options = [a, b, c];
+        let mut options = [
+            (Map::ALL[0], modes[0]),
+            (Map::ALL[1], modes[1]),
+            (Map::ALL[2], modes[2]),
+        ];
         for i in (1..3).rev() {
             let j = self.pick(i + 1);
             options.swap(i, j);
@@ -299,15 +291,22 @@ pub fn fade(
 mod tests {
     use super::*;
     #[test]
-    fn options_cover_both_maps_and_differ() {
+    fn options_cover_every_map_with_different_modes() {
+        let mut seen = Vec::new();
         for seed in 0..200 {
             let mut v = Vote::default();
             v.begin(seed);
             let o = v.options;
-            assert!(o[0] != o[1] && o[1] != o[2] && o[0] != o[2]);
-            assert!(o.iter().any(|x| x.0 == Map::Sector05));
-            assert!(o.iter().any(|x| x.0 == Map::Skyreach));
+            assert!(o[0].1 != o[1].1 && o[1].1 != o[2].1 && o[0].1 != o[2].1);
+            for map in Map::ALL {
+                assert!(o.iter().any(|x| x.0 == map));
+            }
             assert!(v.bot_at.iter().all(|t| *t < VOTE_TIME));
+            seen.extend(o.iter().map(|x| x.1));
+        }
+        // Every mode, the new ones included, comes up.
+        for mode in Mode::ALL {
+            assert!(seen.contains(&mode), "{mode:?} never offered");
         }
     }
     #[test]

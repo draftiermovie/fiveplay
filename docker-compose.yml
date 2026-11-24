@@ -19,7 +19,8 @@ services:
     expose:
       - "8080"
     environment:
-      # Maps and modes played in turn: sector05 | skyreach, ffa | tdm.
-      FIVEPLAY_ROTATION: ${FIVEPLAY_ROTATION:-sector05:ffa,skyreach:ffa,sector05:tdm,skyreach:tdm}
+      # Maps and modes played in turn: sector05 | skyreach | foundry,
+      # ffa | tdm | gun (Gun Game).
+      FIVEPLAY_ROTATION: ${FIVEPLAY_ROTATION:-sector05:ffa,skyreach:tdm,foundry:gun,foundry:ffa,sector05:tdm,skyreach:gun}
       FIVEPLAY_MATCH_SECONDS: ${FIVEPLAY_MATCH_SECONDS:-300}
       FIVEPLAY_MAX_PLAYERS: ${FIVEPLAY_MAX_PLAYERS:-6}

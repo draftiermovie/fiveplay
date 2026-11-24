@@ -109,10 +109,25 @@ impl Arsenal {
         self.ammo[i] += amount;
         self.reserve[i] -= amount;
     }
+    /// Switches to `weapon` with a full magazine and reserve (Gun Game).
+    pub fn promote(&mut self, weapon: usize) {
+        if self.selected != weapon {
+            let fresh = Self::default();
+            self.selected = weapon;
+            self.ammo[weapon] = fresh.ammo[weapon];
+            self.reserve[weapon] = fresh.reserve[weapon];
+            self.reload = 0.;
+            self.cooldown = self.cooldown.max(0.25);
+        }
+    }
     fn random(&mut self) -> f32 {
         self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1);
         ((self.seed >> 32) as u32 as f32 / u32::MAX as f32) * 2. - 1.
     }
+}
+/// The weapon a Gun Game player uses after `kills` kills.
+pub fn gun_game_weapon(kills: u32) -> usize {
+    fiveplay_net::gun_weapon(kills.min(u16::MAX as u32) as u16) as usize
 }
 /// Hit zone reported to the server: 0 head, 1 body, 2 legs.
 pub fn zone(head: bool, multiplier: f32) -> u8 {
@@ -214,6 +229,14 @@ pub fn update(
     }
     let dt = time.delta_secs();
     arsenal.cooldown = (arsenal.cooldown - dt).max(0.);
+    // Gun Game picks the weapon from the player's kills; no switching.
+    let gun_game = session.mode == Mode::GunGame;
+    if gun_game {
+        arsenal.promote(gun_game_weapon(board.kills[PLAYER]));
+        // Never stranded without ammunition.
+        let w = arsenal.selected;
+        arsenal.reserve[w] = arsenal.reserve[w].max(WEAPONS[w].magazine);
+    }
     for (i, key) in [
         KeyCode::Digit1,
         KeyCode::Digit2,
@@ -225,7 +248,7 @@ pub fn update(
     .enumerate()
     {
         // Re-pressing the current weapon's key must not cancel its reload.
-        if keys.just_pressed(*key) && arsenal.selected != i {
+        if keys.just_pressed(*key) && arsenal.selected != i && !gun_game {
             arsenal.selected = i;
             arsenal.reload = 0.;
         }
@@ -238,7 +261,7 @@ pub fn update(
     } else {
         0
     };
-    if step != 0 {
+    if step != 0 && !gun_game {
         arsenal.selected = (arsenal.selected as i32 + step).rem_euclid(5) as usize;
         arsenal.reload = 0.;
     }
@@ -420,6 +443,22 @@ pub fn update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gun_game_promotion_refills_the_new_weapon() {
+        let mut a = Arsenal::default();
+        assert_eq!(gun_game_weapon(0), 0);
+        assert_eq!(gun_game_weapon(4), 3);
+        assert_eq!(gun_game_weapon(score::GUN_GAME_LIMIT), 4);
+        a.ammo[3] = 0;
+        a.reserve[3] = 0;
+        a.reload = 1.;
+        a.promote(3);
+        assert_eq!(
+            (a.selected, a.ammo[3], a.reload),
+            (3, WEAPONS[3].magazine, 0.)
+        );
+        assert!(a.reserve[3] > 0);
+    }
     #[test]
     fn reload_conserves_ammo_and_respects_capacity() {
         let mut a = Arsenal::default();

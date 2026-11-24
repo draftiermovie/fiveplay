@@ -442,7 +442,7 @@ pub fn bots(
         }
 
         // Objective modes: where this bot should be (flag, base, hill).
-        let goal = crate::objective::bot_goal(&objective, mode, &bot);
+        let goal = crate::objective::bot_goal(&objective, mode, &bot, feet);
         let flat_to = |p: Vec3| Vec2::new(p.x - feet.x, p.z - feet.z).length();
         let rushing = goal.is_some_and(|g| g.rush);
         // Whoever carries our flag is the top target.

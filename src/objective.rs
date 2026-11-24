@@ -1,20 +1,28 @@
-//! Capture the Flag and King of the Hill: rules, bot goals and visuals.
+//! Capture the Flag, King of the Hill and Kill Confirmed: rules, bot goals
+//! and visuals.
 //!
-//! Both maps share the layout: Blue's base is on the east side (+x), Red's
+//! Every map shares the layout: Blue's base is on the east side (+x), Red's
 //! on the west (-x), and the hill is the arena centre (the raised hill on
 //! Skyreach).
 use crate::{
     combat::Bot,
     game::*,
     player::Player,
-    score::{self, BLUE, PLAYER, RED, Scoreboard},
+    score::{self, BLUE, COMBATANTS, PLAYER, RED, Scoreboard},
     world::Palette,
 };
 use bevy::prelude::*;
 
 pub const CTF_LIMIT: u32 = 3;
 pub const KOTH_LIMIT: u32 = 100;
+pub const KC_LIMIT: u32 = 25;
 pub const HILL_RADIUS: f32 = 4.5;
+/// Kill Confirmed: how long a dropped tag lasts, how close you must get to
+/// collect it, how many can lie around and how far bots go out of their way.
+const TAG_TIME: f32 = 30.;
+const TAG_TOUCH: f32 = 1.5;
+pub const MAX_TAGS: usize = 16;
+const TAG_SEEK: f32 = 18.;
 const TOUCH: f32 = 1.6;
 const CAPTURE: f32 = 2.2;
 const AUTO_RETURN: f32 = 15.;
@@ -32,13 +40,21 @@ pub enum FlagState {
     Carried(usize),
     Dropped,
 }
+/// A Kill Confirmed tag dropped where a player of `team` died.
+#[derive(Clone, Copy, Debug)]
+pub struct Tag {
+    pub pos: Vec3,
+    pub team: usize,
+    pub time: f32,
+}
 #[derive(Clone, Copy, Debug)]
 pub struct Flag {
     pub state: FlagState,
     pub pos: Vec3,
     pub return_time: f32,
 }
-/// Objective state; `score` is captures (CTF) or seconds held (KOTH), per team.
+/// Objective state; `score` is captures (CTF), seconds held (KOTH) or
+/// confirmed kills (KC), per team.
 #[derive(Resource)]
 pub struct Objective {
     pub flags: [Flag; 2],
@@ -46,6 +62,10 @@ pub struct Objective {
     /// Team holding the hill alone, if any.
     pub hill_owner: Option<usize>,
     pub contested: bool,
+    /// Kill Confirmed tags on the ground, oldest first.
+    pub tags: Vec<Tag>,
+    /// Who was alive last frame, so a death drops a tag where it happened.
+    was_alive: [bool; COMBATANTS],
 }
 impl Default for Objective {
     fn default() -> Self {
@@ -59,6 +79,8 @@ impl Default for Objective {
             score: [0.; 2],
             hill_owner: None,
             contested: false,
+            tags: Vec::new(),
+            was_alive: [false; COMBATANTS],
         }
     }
 }
@@ -100,6 +122,13 @@ impl Objective {
                     (false, None) => "NEUTRAL",
                 }
             )),
+            Mode::KillConfirmed => Some(format!(
+                "BLUE {}  /  RED {}  /  FIRST TO {}     COLLECT TAGS TO SCORE  ({} ON THE FIELD)",
+                session.blue,
+                session.red,
+                KC_LIMIT,
+                self.tags.len()
+            )),
             _ => None,
         }
     }
@@ -113,7 +142,8 @@ pub struct Goal {
     pub rush: bool,
     pub radius: f32,
 }
-pub fn bot_goal(obj: &Objective, mode: Mode, bot: &Bot) -> Option<Goal> {
+/// `feet` is where the bot stands now.
+pub fn bot_goal(obj: &Objective, mode: Mode, bot: &Bot, feet: Vec3) -> Option<Goal> {
     let id = bot.id();
     let team = score::team(id);
     let enemy = 1 - team;
@@ -158,6 +188,18 @@ pub fn bot_goal(obj: &Objective, mode: Mode, bot: &Bot) -> Option<Goal> {
                 radius: HILL_RADIUS - 1.2,
             })
         }
+        // Grab (or deny) the closest tag if one is near enough.
+        Mode::KillConfirmed => obj
+            .tags
+            .iter()
+            .map(|t| (flat(t.pos, feet), t.pos))
+            .filter(|(d, _)| *d < TAG_SEEK)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, pos)| Goal {
+                pos,
+                rush: true,
+                radius: 0.5,
+            }),
         _ => None,
     }
 }
@@ -181,7 +223,10 @@ pub fn update(
     bots: Query<(&Bot, &Transform)>,
 ) {
     let mode = session.mode;
-    if !matches!(mode, Mode::CaptureTheFlag | Mode::KingOfTheHill) {
+    if !matches!(
+        mode,
+        Mode::CaptureTheFlag | Mode::KingOfTheHill | Mode::KillConfirmed
+    ) {
         return;
     }
     let playing = session.screen == Screen::Playing;
@@ -296,7 +341,7 @@ pub fn update(
             }
             obj.flags[t] = flag;
         }
-    } else {
+    } else if mode == Mode::KingOfTheHill {
         let mut present = [false; 2];
         for b in bodies.iter().filter(|b| b.alive) {
             if flat(b.feet, Vec3::ZERO) < HILL_RADIUS && b.feet.y < 4. {
@@ -312,9 +357,61 @@ pub fn update(
         if let Some(t) = obj.hill_owner {
             obj.score[t] += dt;
         }
+    } else {
+        kill_confirmed(&mut obj, &bodies, dt, &mut session);
+    }
+    for b in &bodies {
+        obj.was_alive[b.id] = b.alive;
     }
     session.blue = obj.score[BLUE] as u32;
     session.red = obj.score[RED] as u32;
+}
+
+/// Drops a tag for every new death, expires old tags and lets anyone alive
+/// collect one: the killer's side confirms the kill (a point), the victim's
+/// side denies it.
+fn kill_confirmed(obj: &mut Objective, bodies: &[Body], dt: f32, session: &mut Session) {
+    for b in bodies {
+        // A fall into the void leaves nothing to pick up.
+        if obj.was_alive[b.id] && !b.alive && b.feet.y > -5. {
+            if obj.tags.len() >= MAX_TAGS {
+                obj.tags.remove(0);
+            }
+            obj.tags.push(Tag {
+                pos: b.feet,
+                team: score::team(b.id),
+                time: TAG_TIME,
+            });
+        }
+    }
+    for tag in &mut obj.tags {
+        tag.time -= dt;
+    }
+    obj.tags.retain(|t| t.time > 0.);
+    let mut k = 0;
+    while k < obj.tags.len() {
+        let tag = obj.tags[k];
+        let picker = bodies.iter().find(|b| {
+            b.alive && flat(b.feet, tag.pos) < TAG_TOUCH && (b.feet.y - tag.pos.y).abs() < 2.
+        });
+        let Some(b) = picker else {
+            k += 1;
+            continue;
+        };
+        let team = score::team(b.id);
+        if team != tag.team {
+            obj.score[team] += 1.;
+        }
+        if b.id == PLAYER {
+            session.notice = if team != tag.team {
+                "KILL CONFIRMED  +1".into()
+            } else {
+                "KILL DENIED".into()
+            };
+            session.notice_time = 1.5;
+        }
+        obj.tags.remove(k);
+    }
 }
 
 /// Visual parts, spawned once and shown only in their mode.
@@ -324,6 +421,9 @@ pub struct FlagModel(usize);
 pub struct BasePad;
 #[derive(Component)]
 pub struct HillZone;
+/// One of the `MAX_TAGS` pooled Kill Confirmed tag models.
+#[derive(Component)]
+pub struct TagModel(usize);
 #[derive(Resource)]
 pub struct HillMaterials {
     neutral: Handle<StandardMaterial>,
@@ -406,17 +506,58 @@ pub fn setup(
         Visibility::Hidden,
     ));
     commands.insert_resource(hill);
+    // A tag: a small glowing plate inside a dark ring, spinning above the floor.
+    let plate = meshes.add(Cuboid::new(0.34, 0.46, 0.06));
+    let ring = meshes.add(Torus::new(0.32, 0.4));
+    for i in 0..MAX_TAGS {
+        commands
+            .spawn((
+                TagModel(i),
+                Mesh3d(plate.clone()),
+                MeshMaterial3d(palette.blue.clone()),
+                Transform::default(),
+                Visibility::Hidden,
+            ))
+            .with_children(|t| {
+                t.spawn((
+                    Mesh3d(ring.clone()),
+                    MeshMaterial3d(palette.metal.clone()),
+                    Transform::from_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                ));
+            });
+    }
 }
 pub fn visuals(
     time: Res<Time>,
     session: Res<Session>,
     obj: Res<Objective>,
     hill_materials: Res<HillMaterials>,
-    mut flags: Query<(&FlagModel, &mut Transform, &mut Visibility), Without<HillZone>>,
-    mut pads: Query<(&BasePad, &mut Visibility), (Without<FlagModel>, Without<HillZone>)>,
+    palette: Res<Palette>,
+    mut flags: Query<
+        (&FlagModel, &mut Transform, &mut Visibility),
+        (Without<HillZone>, Without<TagModel>),
+    >,
+    mut pads: Query<
+        (&BasePad, &mut Visibility),
+        (Without<FlagModel>, Without<HillZone>, Without<TagModel>),
+    >,
     mut hill: Query<
         (&mut Visibility, &mut MeshMaterial3d<StandardMaterial>),
-        (With<HillZone>, Without<FlagModel>, Without<BasePad>),
+        (
+            With<HillZone>,
+            Without<FlagModel>,
+            Without<BasePad>,
+            Without<TagModel>,
+        ),
+    >,
+    mut tags: Query<
+        (
+            &TagModel,
+            &mut Transform,
+            &mut Visibility,
+            &mut MeshMaterial3d<StandardMaterial>,
+        ),
+        (Without<FlagModel>, Without<BasePad>, Without<HillZone>),
     >,
 ) {
     let ctf = session.mode == Mode::CaptureTheFlag && session.screen != Screen::Loading;
@@ -453,6 +594,28 @@ pub fn visuals(
             material.0 = want.clone();
         }
     }
+    let kc = session.mode == Mode::KillConfirmed && session.screen != Screen::Loading;
+    let t = time.elapsed_secs();
+    for (tag_model, mut tr, mut visibility, mut material) in &mut tags {
+        let Some(tag) = obj.tags.get(tag_model.0).filter(|_| kc) else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+        *visibility = Visibility::Inherited;
+        let phase = tag_model.0 as f32;
+        tr.translation = tag.pos + Vec3::Y * (0.7 + (t * 2.4 + phase).sin() * 0.12);
+        tr.rotation = Quat::from_rotation_y(t * 2. + phase);
+        // Shrink away during the last seconds.
+        tr.scale = Vec3::splat((tag.time / 3.).clamp(0.2, 1.));
+        let want = if tag.team == BLUE {
+            &palette.blue
+        } else {
+            &palette.orange
+        };
+        if material.0 != *want {
+            material.0 = want.clone();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -463,28 +626,81 @@ mod tests {
         let mut obj = Objective::default();
         let attacker = Bot::new(2); // red attacker (id 3)
         let defender = Bot::new(0); // red defender (id 1)
-        let g = bot_goal(&obj, Mode::CaptureTheFlag, &attacker).unwrap();
+        let g = bot_goal(&obj, Mode::CaptureTheFlag, &attacker, Vec3::ZERO).unwrap();
         assert!(g.rush && g.pos.distance(base(BLUE)) < 0.1);
-        let g = bot_goal(&obj, Mode::CaptureTheFlag, &defender).unwrap();
+        let g = bot_goal(&obj, Mode::CaptureTheFlag, &defender, Vec3::ZERO).unwrap();
         assert!(!g.rush && g.pos.distance(base(RED)) < 6.);
         // Carrying the blue flag: head home.
         obj.flags[BLUE].state = FlagState::Carried(attacker.id());
-        let g = bot_goal(&obj, Mode::CaptureTheFlag, &attacker).unwrap();
+        let g = bot_goal(&obj, Mode::CaptureTheFlag, &attacker, Vec3::ZERO).unwrap();
         assert!(g.pos.distance(base(RED)) < 0.1);
         // Own flag taken: even the defender chases it.
         obj.flags[RED].state = FlagState::Carried(PLAYER);
         obj.flags[RED].pos = Vec3::new(10., 0., 3.);
-        let g = bot_goal(&obj, Mode::CaptureTheFlag, &defender).unwrap();
+        let g = bot_goal(&obj, Mode::CaptureTheFlag, &defender, Vec3::ZERO).unwrap();
         assert!(g.rush && g.pos.distance(Vec3::new(10., 0., 3.)) < 0.1);
         assert_eq!(obj.carrying(attacker.id()), Some(BLUE));
-        assert!(bot_goal(&obj, Mode::FreeForAll, &defender).is_none());
+        assert!(bot_goal(&obj, Mode::FreeForAll, &defender, Vec3::ZERO).is_none());
     }
     #[test]
     fn koth_goals_are_inside_the_hill() {
         let obj = Objective::default();
         for i in 0..6 {
-            let g = bot_goal(&obj, Mode::KingOfTheHill, &Bot::new(i)).unwrap();
+            let g = bot_goal(&obj, Mode::KingOfTheHill, &Bot::new(i), Vec3::ZERO).unwrap();
             assert!(Vec2::new(g.pos.x, g.pos.z).length() + g.radius <= HILL_RADIUS + 1.);
         }
+    }
+    #[test]
+    fn kill_confirmed_tags_confirm_deny_and_expire() {
+        let mut obj = Objective::default();
+        let mut session = Session::default();
+        let body = |id, x: f32, alive| Body {
+            id,
+            feet: Vec3::new(x, 0., 0.),
+            alive,
+        };
+        // Red bot 0 (id 1) dies at x = 5 and drops a red tag.
+        obj.was_alive[1] = true;
+        obj.was_alive[2] = true;
+        kill_confirmed(
+            &mut obj,
+            &[body(1, 5., false), body(2, 20., true)],
+            0.1,
+            &mut session,
+        );
+        assert_eq!(obj.tags.len(), 1);
+        assert_eq!(obj.tags[0].team, RED);
+        obj.was_alive[1] = false;
+        // A blue bot nearby goes for it; walking over it confirms the kill.
+        let near = Vec3::new(12., 0., 0.);
+        let goal = bot_goal(&obj, Mode::KillConfirmed, &Bot::new(1), near).unwrap();
+        assert!(goal.rush && goal.pos.distance(Vec3::new(5., 0., 0.)) < 0.1);
+        kill_confirmed(
+            &mut obj,
+            &[body(1, 5., false), body(2, 5.5, true)],
+            0.1,
+            &mut session,
+        );
+        assert!(obj.tags.is_empty());
+        assert_eq!(obj.score[BLUE], 1.);
+        // A red tag picked up by red is denied: no point.
+        obj.tags.push(Tag {
+            pos: Vec3::ZERO,
+            team: RED,
+            time: TAG_TIME,
+        });
+        kill_confirmed(&mut obj, &[body(3, 0.3, true)], 0.1, &mut session);
+        assert!(obj.tags.is_empty());
+        assert_eq!(obj.score, [0., 1.]);
+        // Far-off tags are ignored by bots, and unclaimed ones expire.
+        obj.tags.push(Tag {
+            pos: Vec3::new(-25., 0., 0.),
+            team: RED,
+            time: 0.5,
+        });
+        let far = Vec3::new(25., 0., 0.);
+        assert!(bot_goal(&obj, Mode::KillConfirmed, &Bot::new(1), far).is_none());
+        kill_confirmed(&mut obj, &[], 1., &mut session);
+        assert!(obj.tags.is_empty());
     }
 }

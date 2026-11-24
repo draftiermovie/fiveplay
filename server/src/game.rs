@@ -34,11 +34,13 @@ pub fn parse_rotation(text: &str) -> Rotation {
             let map = match map.trim().to_ascii_lowercase().as_str() {
                 "sector05" => MAP_SECTOR05,
                 "skyreach" => MAP_SKYREACH,
+                "foundry" => MAP_FOUNDRY,
                 _ => return None,
             };
             let mode = match mode.trim().to_ascii_lowercase().as_str() {
                 "ffa" => MODE_FFA,
                 "tdm" => MODE_TDM,
+                "gun" | "gungame" => MODE_GUN,
                 _ => return None,
             };
             Some((map, mode))
@@ -46,14 +48,18 @@ pub fn parse_rotation(text: &str) -> Rotation {
         .collect()
 }
 pub fn map_name(map: u8) -> &'static str {
-    if map == MAP_SKYREACH {
-        "skyreach"
-    } else {
-        "sector05"
+    match map {
+        MAP_SKYREACH => "skyreach",
+        MAP_FOUNDRY => "foundry",
+        _ => "sector05",
     }
 }
 pub fn mode_name(mode: u8) -> &'static str {
-    if mode == MODE_TDM { "tdm" } else { "ffa" }
+    match mode {
+        MODE_TDM => "tdm",
+        MODE_GUN => "gun",
+        _ => "ffa",
+    }
 }
 
 pub struct Player {
@@ -138,7 +144,7 @@ impl Game {
     }
     fn enemies(&self, a: usize, b: usize) -> bool {
         match (&self.players[a], &self.players[b]) {
-            (Some(pa), Some(pb)) => a != b && (self.mode() == MODE_FFA || pa.team != pb.team),
+            (Some(pa), Some(pb)) => a != b && (self.mode() != MODE_TDM || pa.team != pb.team),
             _ => false,
         }
     }
@@ -300,7 +306,7 @@ impl Game {
         self.spawn_turn += 1;
         let turn = self.spawn_turn;
         let best = (0..6)
-            .filter(|k| mode == MODE_FFA || k % 2 == team as usize)
+            .filter(|k| mode != MODE_TDM || k % 2 == team as usize)
             .map(|k| {
                 let feet = spawn_point(k);
                 let safety = threats
@@ -344,6 +350,10 @@ impl Game {
         );
         // Positions are up to a few packets old on both sides; allow slack.
         if !a.alive || !v.alive || distance(a.pos, v.pos) > rule.range + 4. {
+            return;
+        }
+        // Gun Game: only the weapon the attacker's kill count allows.
+        if self.mode() == MODE_GUN && weapon != gun_weapon(a.kills) {
             return;
         }
         let a = self.players[attacker].as_mut().unwrap();
@@ -744,5 +754,40 @@ mod tests {
         assert_eq!(g.players[a].as_ref().unwrap().pos, spawn);
         g.handle(addr(1), state(life));
         assert_eq!(g.players[a].as_ref().unwrap().pos, [5., 1., 5.]);
+    }
+
+    #[test]
+    fn gun_game_only_accepts_the_ladder_weapon() {
+        let mut g = game(MODE_GUN);
+        let a = hello(&mut g, 1, "a");
+        let b = hello(&mut g, 2, "b");
+        place(&mut g, a, [0., 1., 0.]);
+        place(&mut g, b, [0., 1., -10.]);
+        let hit = |g: &mut Game, weapon| {
+            g.handle(
+                addr(1),
+                ClientMsg::Hit {
+                    victim: b as u8,
+                    weapon,
+                    zone: ZONE_HEAD,
+                },
+            )
+        };
+        // No kills yet: the sniper is not allowed, the assault rifle is.
+        hit(&mut g, 2);
+        assert_eq!(g.players[b].as_ref().unwrap().health, 100.);
+        hit(&mut g, 0);
+        assert!(g.players[b].as_ref().unwrap().health < 100.);
+        // Everyone is an enemy, as in Free For All, whatever the teams.
+        let c = hello(&mut g, 3, "c");
+        assert!(g.enemies(a, c));
+        assert_eq!(
+            parse_rotation("foundry:gun, skyreach:gungame"),
+            vec![(MAP_FOUNDRY, MODE_GUN), (MAP_SKYREACH, MODE_GUN)]
+        );
+        assert_eq!(
+            (map_name(MAP_FOUNDRY), mode_name(MODE_GUN)),
+            ("foundry", "gun")
+        );
     }
 }

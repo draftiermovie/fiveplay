@@ -101,16 +101,8 @@ impl SaveData {
             s.crosshair,
             s.show_fps,
             self.weapon,
-            match self.mode {
-                Mode::FreeForAll => "ffa",
-                Mode::TeamDeathmatch => "tdm",
-                Mode::CaptureTheFlag => "ctf",
-                Mode::KingOfTheHill => "koth",
-            },
-            match self.map {
-                Map::Sector05 => "sector05",
-                Map::Skyreach => "skyreach",
-            },
+            self.mode.key(),
+            self.map.key(),
             c.kills,
             c.deaths,
             c.matches,
@@ -197,23 +189,21 @@ name={}
                         data.settings.show_fps = v;
                     }
                 }
-                "map" => match value {
-                    "sector05" => data.map = Map::Sector05,
-                    "skyreach" => data.map = Map::Skyreach,
-                    _ => {}
-                },
+                "map" => {
+                    if let Some(map) = Map::from_key(value) {
+                        data.map = map;
+                    }
+                }
                 "weapon" => {
                     if let Some(v) = u().filter(|&v| (v as usize) < WEAPONS.len()) {
                         data.weapon = v as usize;
                     }
                 }
-                "mode" => match value {
-                    "ffa" => data.mode = Mode::FreeForAll,
-                    "tdm" => data.mode = Mode::TeamDeathmatch,
-                    "ctf" => data.mode = Mode::CaptureTheFlag,
-                    "koth" => data.mode = Mode::KingOfTheHill,
-                    _ => {}
-                },
+                "mode" => {
+                    if let Some(mode) = Mode::from_key(value) {
+                        data.mode = mode;
+                    }
+                }
                 "server" => {
                     if value.len() <= 96 && value.chars().all(|c| c.is_ascii_graphic()) {
                         data.server = value.to_string();
@@ -346,8 +336,8 @@ mod tests {
                 },
             },
             weapon: 3,
-            mode: Mode::KingOfTheHill,
-            map: Map::Skyreach,
+            mode: Mode::KillConfirmed,
+            map: Map::Foundry,
             career: Career {
                 kills: 120,
                 deaths: 45,

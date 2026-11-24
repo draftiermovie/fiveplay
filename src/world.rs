@@ -38,6 +38,12 @@ pub struct Palette {
     pub blue: Handle<StandardMaterial>,
     pub orange: Handle<StandardMaterial>,
     pub metal: Handle<StandardMaterial>,
+    /// Foundry: concrete, container paints, hazard yellow and lamp strips.
+    pub concrete: Handle<StandardMaterial>,
+    pub rust: Handle<StandardMaterial>,
+    pub teal: Handle<StandardMaterial>,
+    pub hazard: Handle<StandardMaterial>,
+    pub lamp: Handle<StandardMaterial>,
 }
 pub fn setup(
     mut commands: Commands,
@@ -58,6 +64,31 @@ pub fn setup(
             ..default()
         }),
         metal: mats.add(Color::srgb(0.035, 0.045, 0.06)),
+        concrete: mats.add(StandardMaterial {
+            base_color: Color::srgb(0.3, 0.3, 0.31),
+            perceptual_roughness: 0.95,
+            ..default()
+        }),
+        rust: mats.add(StandardMaterial {
+            base_color: Color::srgb(0.55, 0.16, 0.07),
+            perceptual_roughness: 0.8,
+            ..default()
+        }),
+        teal: mats.add(StandardMaterial {
+            base_color: Color::srgb(0.07, 0.38, 0.42),
+            perceptual_roughness: 0.8,
+            ..default()
+        }),
+        hazard: mats.add(StandardMaterial {
+            base_color: Color::srgb(0.95, 0.75, 0.08),
+            perceptual_roughness: 0.7,
+            ..default()
+        }),
+        lamp: mats.add(StandardMaterial {
+            base_color: Color::srgb(1., 0.62, 0.25),
+            emissive: LinearRgba::rgb(6., 2.6, 0.6),
+            ..default()
+        }),
     };
     commands.insert_resource(palette);
     commands.spawn((
@@ -390,6 +421,128 @@ fn skyreach(commands: &mut Commands, meshes: &mut Assets<Mesh>, models: &Models)
         commands.entity(drone).insert(orbit);
     }
 }
+/// Surface of a Foundry block.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Paint {
+    Concrete,
+    Wall,
+    Metal,
+    Rust,
+    Teal,
+    Hazard,
+    Lamp,
+}
+/// Foundry's collidable geometry: (centre, size, paint). Floor top is y = 0.
+/// The layout is point-symmetric (x, z) -> (-x, -z), so neither side has an
+/// advantage, and it keeps every spawn point, both flag bases and the hill
+/// clear (see the test below).
+fn foundry_blocks() -> Vec<(Vec3, Vec3, Paint)> {
+    use Paint::*;
+    let mut blocks = vec![
+        (Vec3::new(0., -0.5, 0.), Vec3::new(60., 1., 60.), Concrete),
+        (Vec3::new(0., 3.5, -30.), Vec3::new(60., 7., 1.), Wall),
+        (Vec3::new(0., 3.5, 30.), Vec3::new(60., 7., 1.), Wall),
+        (Vec3::new(-30., 3.5, 0.), Vec3::new(1., 7., 60.), Wall),
+        (Vec3::new(30., 3.5, 0.), Vec3::new(1., 7., 60.), Wall),
+        // The furnace deck in the middle (the hill) with a crate on top.
+        (Vec3::new(0., 0.5, 0.), Vec3::new(10., 1., 10.), Metal),
+        (Vec3::new(0., 1.5, 0.), Vec3::new(2., 1., 2.), Hazard),
+    ];
+    // Hazard stripes around the deck (flat, walkable).
+    for (pos, size) in [
+        (Vec3::new(0., 0.02, 6.), Vec3::new(12.3, 0.04, 0.3)),
+        (Vec3::new(0., 0.02, -6.), Vec3::new(12.3, 0.04, 0.3)),
+        (Vec3::new(6., 0.02, 0.), Vec3::new(0.3, 0.04, 12.3)),
+        (Vec3::new(-6., 0.02, 0.), Vec3::new(0.3, 0.04, 12.3)),
+    ] {
+        blocks.push((pos, size, Hazard));
+    }
+    // One half of the yard; the other half is the same turned 180 degrees.
+    let half = [
+        // Gantry: a 2 m deck along the end wall, reached by a 1 m step at
+        // each end, with chest-high plates along its front edge.
+        (Vec3::new(0., 1., 24.), Vec3::new(18., 2., 5.), Metal),
+        (Vec3::new(10.5, 0.5, 24.), Vec3::new(3., 1., 5.), Metal),
+        (Vec3::new(-10.5, 0.5, 24.), Vec3::new(3., 1., 5.), Metal),
+        (Vec3::new(4.5, 2.55, 21.7), Vec3::new(4., 1.1, 0.4), Hazard),
+        (Vec3::new(-4.5, 2.55, 21.7), Vec3::new(4., 1.1, 0.4), Hazard),
+        // Shipping containers: lane blockers and a two-high stack.
+        (Vec3::new(12., 1.4, 9.), Vec3::new(2.6, 2.8, 6.5), Teal),
+        (Vec3::new(-7., 1.4, 14.), Vec3::new(6.5, 2.8, 2.6), Rust),
+        (Vec3::new(-16., 1.4, 4.), Vec3::new(2.6, 2.8, 6.5), Rust),
+        (Vec3::new(-16., 4.2, 4.), Vec3::new(2.6, 2.8, 6.5), Teal),
+        // Concrete pillars that break the long sightlines.
+        (Vec3::new(6., 2., 18.), Vec3::new(1.5, 4., 1.5), Wall),
+        (Vec3::new(-6., 2., 18.), Vec3::new(1.5, 4., 1.5), Wall),
+        // Waist-high crates and the walls beside each flag base.
+        (Vec3::new(8., 0.55, -3.), Vec3::new(1.6, 1.1, 1.6), Hazard),
+        (Vec3::new(20., 0.55, 12.), Vec3::new(1.6, 1.1, 1.6), Rust),
+        (Vec3::new(-20., 0.55, 12.), Vec3::new(1.6, 1.1, 1.6), Teal),
+        (Vec3::new(25., 0.55, 4.), Vec3::new(3., 1.1, 0.4), Hazard),
+        (Vec3::new(25., 0.55, -4.), Vec3::new(3., 1.1, 0.4), Hazard),
+        // Lamp strips high on the walls.
+        (Vec3::new(0., 5.5, 29.4), Vec3::new(50., 0.15, 0.1), Lamp),
+        (Vec3::new(29.4, 5.5, 0.), Vec3::new(0.1, 0.15, 50.), Lamp),
+    ];
+    for (pos, size, paint) in half {
+        blocks.push((pos, size, paint));
+        blocks.push((Vec3::new(-pos.x, pos.y, -pos.z), size, paint));
+    }
+    blocks
+}
+/// Dusk-lit container yard: a furnace deck in the middle, raised gantries at
+/// both ends, containers and pillars for cover.
+fn foundry(commands: &mut Commands, meshes: &mut Assets<Mesh>, palette: &Palette) {
+    for (pos, size, paint) in foundry_blocks() {
+        let material = match paint {
+            Paint::Concrete => palette.concrete.clone(),
+            Paint::Wall => palette.wall.clone(),
+            Paint::Metal => palette.metal.clone(),
+            Paint::Rust => palette.rust.clone(),
+            Paint::Teal => palette.teal.clone(),
+            Paint::Hazard => palette.hazard.clone(),
+            Paint::Lamp => palette.lamp.clone(),
+        };
+        solid(commands, meshes, material, pos, size);
+    }
+    // Smokestacks outside the walls, seen from the yard and the menu camera.
+    let stack = meshes.add(Cylinder::new(2.2, 26.));
+    let rim = meshes.add(Cylinder::new(2.5, 0.6));
+    for (x, z) in [(-38., -18.), (38., 20.), (-24., 40.), (22., -40.)] {
+        commands.spawn((
+            Mesh3d(stack.clone()),
+            MeshMaterial3d(palette.wall.clone()),
+            Transform::from_xyz(x, 13., z),
+            MapPiece,
+        ));
+        commands.spawn((
+            Mesh3d(rim.clone()),
+            MeshMaterial3d(palette.lamp.clone()),
+            Transform::from_xyz(x, 25.6, z),
+            MapPiece,
+        ));
+    }
+    // Warm work lights over the gantries and the furnace deck.
+    for (pos, intensity, range) in [
+        (Vec3::new(0., 6., 24.), 400000., 26.),
+        (Vec3::new(0., 6., -24.), 400000., 26.),
+        (Vec3::new(0., 5., 0.), 600000., 22.),
+        (Vec3::new(24., 5., 0.), 300000., 18.),
+        (Vec3::new(-24., 5., 0.), 300000., 18.),
+    ] {
+        commands.spawn((
+            PointLight {
+                color: Color::srgb(1., 0.62, 0.3),
+                intensity,
+                range,
+                shadow_maps_enabled: false,
+                ..default()
+            },
+            Transform::from_translation(pos),
+            MapPiece,
+        ));
+    }
+}
 /// Builds the selected map once models are ready, and rebuilds it whenever the
 /// selection changes. Also sets the matching sky and lighting.
 pub fn switch_map(
@@ -418,6 +571,19 @@ pub fn switch_map(
             commands.insert_resource(GlobalAmbientLight {
                 color: Color::srgb(0.35, 0.55, 0.8),
                 brightness: 120.,
+                ..default()
+            });
+        }
+        Map::Foundry => {
+            foundry(&mut commands, &mut meshes, &palette);
+            // Dusk: a low warm sun and cool sky light, so the lamps and
+            // container paints stand out against grey concrete.
+            clear.0 = Color::srgb(0.16, 0.13, 0.2);
+            sun.illuminance = 5500.;
+            sun.color = Color::srgb(1., 0.78, 0.58);
+            commands.insert_resource(GlobalAmbientLight {
+                color: Color::srgb(0.55, 0.62, 0.85),
+                brightness: 260.,
                 ..default()
             });
         }
@@ -516,6 +682,7 @@ pub fn player_spawn(map: Map, mode: Mode) -> Vec3 {
     match map {
         Map::Sector05 => Vec3::new(0., 1., 14.),
         Map::Skyreach => Vec3::new(0., 1., 24.),
+        Map::Foundry => Vec3::new(0., 1., 16.),
     }
 }
 pub fn animate(
@@ -546,5 +713,39 @@ pub fn animate(
         let t = time.elapsed_secs() * 0.07;
         camera.translation = Vec3::new(t.cos() * 27., 18., t.sin() * 27.);
         camera.look_at(Vec3::ZERO, Vec3::Y);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{objective::base, score};
+    #[test]
+    fn foundry_keeps_spawns_bases_and_the_hill_clear() {
+        let mut points: Vec<Vec3> = (0..6).map(spawn_point).collect();
+        points.push(player_spawn(Map::Foundry, Mode::FreeForAll));
+        points.push(player_spawn(Map::Foundry, Mode::TeamDeathmatch));
+        points.push(base(score::BLUE));
+        points.push(base(score::RED));
+        // The navigation probe needs open floor here on every map.
+        points.push(Vec3::new(20., 0., 25.));
+        let blocks = foundry_blocks();
+        for (pos, size, paint) in &blocks {
+            let top = pos.y + size.y * 0.5;
+            if top < 0.1 || *paint == Paint::Lamp {
+                continue;
+            }
+            for p in &points {
+                let inside = (p.x - pos.x).abs() < size.x * 0.5 + 0.8
+                    && (p.z - pos.z).abs() < size.z * 0.5 + 0.8;
+                assert!(!inside, "{p} is blocked by {pos} {size}");
+            }
+        }
+        // Inside the arena walls, and the hill (furnace deck) stays below the
+        // King of the Hill height limit.
+        assert!(blocks.iter().all(|(p, s, _)| p.x.abs() - s.x * 0.5 <= 30.5));
+        assert!(blocks.iter().all(|(p, s, _)| p.z.abs() - s.z * 0.5 <= 30.5));
+        let deck = blocks[5];
+        assert!(deck.0.y + deck.1.y * 0.5 < 4.);
     }
 }

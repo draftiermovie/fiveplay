@@ -10,6 +10,8 @@ pub const COMBATANTS: usize = 7;
 pub const FFA_LIMIT: u32 = 20;
 /// Team kills needed to win Team Deathmatch.
 pub const TDM_LIMIT: u32 = 30;
+/// Kills needed to get through the whole Gun Game ladder.
+pub const GUN_GAME_LIMIT: u32 = fiveplay_net::score_limit(fiveplay_net::MODE_GUN) as u32;
 /// Seconds a kill-feed line stays up.
 const FEED_TIME: f32 = 5.;
 
@@ -62,9 +64,10 @@ pub fn team(id: usize) -> usize {
         RED
     }
 }
-/// In Free For All everyone is an enemy; in Team Deathmatch only the other team.
+/// In Free For All and Gun Game everyone is an enemy; in team modes only the
+/// other team.
 pub fn enemies(mode: Mode, a: usize, b: usize) -> bool {
-    a != b && (mode == Mode::FreeForAll || team(a) != team(b))
+    a != b && (!mode.teams() || team(a) != team(b))
 }
 pub fn ordinal(n: usize) -> String {
     let suffix = match (n % 10, n % 100) {
@@ -149,10 +152,12 @@ impl Scoreboard {
         session.remaining <= 0.
             || match session.mode {
                 Mode::FreeForAll => self.kills.iter().any(|&k| k >= FFA_LIMIT),
+                Mode::GunGame => self.kills.iter().any(|&k| k >= GUN_GAME_LIMIT),
                 mode => {
                     let limit = match mode {
                         Mode::CaptureTheFlag => crate::objective::CTF_LIMIT,
                         Mode::KingOfTheHill => crate::objective::KOTH_LIMIT,
+                        Mode::KillConfirmed => crate::objective::KC_LIMIT,
                         _ => TDM_LIMIT,
                     };
                     session.blue >= limit || session.red >= limit
@@ -162,7 +167,7 @@ impl Scoreboard {
     /// Win: sole first place in Free For All, or more team kills in Team Deathmatch.
     pub fn outcome(&self, session: &Session) -> Outcome {
         match session.mode {
-            Mode::FreeForAll => {
+            mode if !mode.teams() => {
                 let top = *self.kills.iter().max().unwrap_or(&0);
                 let tied = self.kills.iter().filter(|&&k| k == top).count() > 1;
                 if self.kills[PLAYER] == top && !tied {

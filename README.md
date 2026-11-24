@@ -71,15 +71,15 @@ Xbox, PlayStation (DualShock 4, DualSense), Nintendo Switch Pro and most generic
 
 ## Match vote
 
-PLAY (and PLAY AGAIN) opens a vote between three map + mode options, each shown as a card with a screenshot of the map and its name and mode on top. You have 5 seconds: click a card, press 1-3, or use a controller. The six bots vote at random moments. Votes stay hidden until everyone has voted (or time runs out); then each card shows who picked it with small icons in its bottom-left corner (YOU, and each bot's number in its colour), the winner is outlined in gold, and ties are settled at random. The screen fades to black showing the winning map and mode, loads it, and fades into the match. Both maps always appear among the three options. The card images live in `assets/ui/maps/`.
+PLAY (and PLAY AGAIN) opens a vote between three map + mode options, each shown as a card with a screenshot of the map and its name and mode on top. You have 5 seconds: click a card, press 1-3, or use a controller. The six bots vote at random moments. Votes stay hidden until everyone has voted (or time runs out); then each card shows who picked it with small icons in its bottom-left corner (YOU, and each bot's number in its colour), the winner is outlined in gold, and ties are settled at random. The screen fades to black showing the winning map and mode, loads it, and fades into the match. Each of the three maps is one option, each with a different mode. The card images live in `assets/ui/maps/`.
 
 ## Multiplayer
 
-**Playing:** on the main menu click **SERVER /** and type the server's address (`host` or `host:port`; the default port is 7777), press Enter, then **PLAY ONLINE**. `FivePlay.exe --connect host[:port]` joins directly. Your name is your Windows user name (saved as `name=` in the save file, where it can be changed). Up to six players per server, in Free For All or Team Deathmatch; the server picks the map and mode from its rotation, runs five-minute matches and starts the next one 12 seconds after the results. Your own team always shows as Blue. Leaving to the main menu disconnects.
+**Playing:** on the main menu click **SERVER /** and type the server's address (`host` or `host:port`; the default port is 7777), press Enter, then **PLAY ONLINE**. `FivePlay.exe --connect host[:port]` joins directly. Your name is your Windows user name (saved as `name=` in the save file, where it can be changed). Up to six players per server, in Free For All, Team Deathmatch or Gun Game; the server picks the map and mode from its rotation, runs five-minute matches and starts the next one 12 seconds after the results. Your own team always shows as Blue. Leaving to the main menu disconnects.
 
 **How it works:** a dedicated server (`server/`, plain Rust with no dependencies besides the shared protocol crate `net/`) talks to clients over UDP. Clients move their own player and report hits; the server owns health, kills, deaths, team scores, the clock, spawn points and respawns, and checks every reported hit (both alive, enemies, within weapon range, within the weapon's fire rate) before applying damage. Remote players appear as the soldier avatars the bots normally use, with name and health plates, and their shots show as tracers. Bots are not in online matches. A client of a different protocol version is told to update.
 
-**Limits of this first stage:** movement is client-authoritative and hits are client-reported (validated, not re-simulated), so a modified client could still cheat; there is no lag compensation, prediction or reconciliation yet; Capture the Flag and King of the Hill are offline only.
+**Limits of this first stage:** movement is client-authoritative and hits are client-reported (validated, not re-simulated), so a modified client could still cheat; there is no lag compensation, prediction or reconciliation yet; Capture the Flag, King of the Hill and Kill Confirmed are offline only. Server and game must be the same version: a game from before Foundry and Gun Game is told to update.
 
 ### Hosting on Dokploy
 
@@ -93,7 +93,7 @@ Server settings (Dokploy **Environment** tab or `.env`):
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `FIVEPLAY_ROTATION` | `sector05:ffa,skyreach:ffa,sector05:tdm,skyreach:tdm` | Maps (`sector05`, `skyreach`) and modes (`ffa`, `tdm`) played in turn |
+| `FIVEPLAY_ROTATION` | `sector05:ffa,skyreach:tdm,foundry:gun,foundry:ffa,sector05:tdm,skyreach:gun` | Maps (`sector05`, `skyreach`, `foundry`) and modes (`ffa`, `tdm`, `gun`) played in turn |
 | `FIVEPLAY_MATCH_SECONDS` | `300` | Match length |
 | `FIVEPLAY_MAX_PLAYERS` | `6` | 1–6 |
 | `FIVEPLAY_PORT` | `7777` | Published UDP port on the host |
@@ -107,7 +107,9 @@ Without Dokploy: `docker compose up -d --build`, or run the binary directly with
 - **Free For All**: every combatant (you and six bots) fights everyone else. First to 20 kills wins; you win only with sole first place.
 - **Team Deathmatch**: Blue (you and three bots) against Red (three bots). First team to 30 kills wins.
 - **Capture the Flag**: Blue's base is on the east side, Red's on the west, each marked by a glowing pad with the team flag. Walk over the enemy flag to take it and carry it to your own pad while your own flag is home. A carrier who dies drops the flag; a teammate touching it returns it, otherwise it returns on its own after 15 s. First to 3 captures wins.
-- **King of the Hill**: hold the glowing zone in the arena centre (the raised hill on Skyreach). A team scores a point per second while only its players are inside; the zone turns blue, red, or yellow when contested. First to 100 wins.
+- **King of the Hill**: hold the glowing zone in the arena centre (the raised hill on Skyreach, the furnace deck on Foundry). A team scores a point per second while only its players are inside; the zone turns blue, red, or yellow when contested. First to 100 wins.
+- **Gun Game**: everyone against everyone, but you can't choose your weapon. You start with the assault rifle and move to the next weapon every 2 kills: assault rifle, SMG, shotgun, sniper, sidearm. The 10th kill (the second with the sidearm) wins. Each new weapon comes with a full magazine, and you never run out of reserve ammo. Also played online; the server only accepts hits from the weapon your kill count allows.
+- **Kill Confirmed**: Blue against Red. A kill doesn't score by itself: the victim drops a glowing tag in their team's colour. Run over an enemy tag to confirm the kill (a point for your team), or over a teammate's tag to deny it. Tags vanish after 30 s. First to 25 wins. Bots go for any tag within about 18 m.
 
 The vote picks the mode and map for each match; **MODE /** and **MAP /** in the main menu set the defaults (saved). In the team modes you deploy on Blue's side and bots respawn on their own side. Objective bots play the objective: one defender per team guards its base, the others go for the enemy flag, escort their carrier, chase whoever has their own flag and return it when dropped; flag carriers and hill holders don't retreat to cover. In King of the Hill every bot pushes into the zone.
 
@@ -117,7 +119,7 @@ When you die the match keeps running. A short kill-cam turns towards your killer
 
 Bots use a navigation grid sampled from each map's colliders and A* pathfinding, so they path around cover and climb 1 m ledges (the Skyreach hill and perches). Each bot targets the nearest visible enemy, preferring whoever last shot it, then holds its own preferred range while strafing; now and then it takes nearby high ground. Below 40 health it retreats to a spot its attacker cannot see and heals. Bot shots can miss, more often at range and against moving targets, and leave tracers. Bots respawn after three seconds at the spawn point furthest from their enemies.
 
-For an unattended AI check, `FIVEPLAY_SOAK=60 cargo run -- --smoke-test` keeps the Skyreach match running for 60 s (the player is a spectator in smoke tests), logging each bot's plan every five seconds and the final standings.
+For an unattended AI check, `FIVEPLAY_SOAK=60 cargo run -- --smoke-test` keeps the last (Foundry) match running for 60 s; add `FIVEPLAY_SMOKE_MODE=kc` (or `ffa`, `tdm`, `ctf`, `koth`, `gun`) to choose the mode (the player is a spectator in smoke tests), logging each bot's plan every five seconds and the final standings.
 
 ## Characters
 
@@ -131,6 +133,9 @@ Choose the map from the main menu (**MAP /**); the choice is saved.
 
 - **Sector 05**: the original enclosed concrete arena with pillar rows and central cover.
 - **Skyreach**: an open grass arena built from the Kenney Platformer Kit models in `assets/models/`: a two-step central hill, low and high walls for cover, two-step sniper perches on the flanks, and patrol drones circling overhead.
+- **Foundry**: a container yard at dusk. A raised furnace deck in the middle (the hill), a 2 m gantry along each end wall reached by a 1 m step at either end, shipping containers (one stacked two high) and concrete pillars that break up long sightlines, smokestacks beyond the walls and warm work lights. The layout is mirrored, so neither side has an advantage.
+
+The vote card images in `assets/ui/maps/` are captured from the menu camera: `FIVEPLAY_THUMBNAIL=foundry cargo run` saves `foundry-thumbnail.png` with the UI hidden and exits; scale it to 640x360.
 
 The kit models reference a shared `Textures/colormap.png`, which is not included. Without it every model gets a flat colour, and Bevy logs one `Path not found` error for the texture on startup. To use the original look, copy `Textures/colormap.png` from the Platformer Kit download into `assets/models/Textures/` and rebuild (assets are embedded at build time), or run with `FIVEPLAY_ASSETS=disk`.
 
@@ -141,13 +146,13 @@ Settings has sliders for mouse sensitivity, field of view and audio volume (drag
 - `game.rs`: session state, settings, pause and cursor capture.
 - `gamepad.rs`: controller input, button names per controller type, menu navigation, rumble and connection notices.
 - `controls.rs`: rebindable key bindings and the key names used on screen and in the save file.
-- `world.rs`: map construction and switching (Sector 05, Skyreach), static physics, lighting and menu camera.
+- `world.rs`: map construction and switching (Sector 05, Skyreach, Foundry), static physics, lighting and menu camera.
 - `models.rs`: loads the glTF kit models, flattens them to meshes and supplies their materials.
 - `player.rs`: acceleration, gravity, capsule sweeps, sprint, slide and aiming camera.
 - `weapons.rs`: weapon definitions, ammo, reload, recoil, spread, wall-occluded hitscan and effects.
 - `ai.rs`: navigation grid, A* pathfinding and bot behaviour (targeting, strafing, cover, high ground, shooting).
 - `score.rs`: per-combatant standings, team scores, win conditions and the kill feed.
-- `objective.rs`: Capture the Flag and King of the Hill rules, bot objective goals and the flag/hill visuals.
+- `objective.rs`: Capture the Flag, King of the Hill and Kill Confirmed rules, bot objective goals and the flag/hill/tag visuals.
 - `combat.rs`: bot state, soldier hit areas and effect cleanup.
 - `vote.rs`: the pre-match vote (options, bot votes, reveal) and the fade transition into the match.
 - `spectate.rs`: kill-cam and spectator camera while dead, redeploy countdown.
@@ -159,7 +164,7 @@ Settings has sliders for mouse sensitivity, field of view and audio volume (drag
 - `net/`: the UDP wire protocol and the rules shared with the server (weapon numbers, hit zones, spawn points).
 - `server/`: the dedicated server (match simulation in `game.rs`, sockets and status page in `main.rs`) and its Dockerfile; `docker-compose.yml` deploys it.
 
-For a bounded graphical startup check, run `./tools/run.ps1 -SmokeTest`. It attempts menu, Sector 05 and Skyreach captures in the project root and exits automatically. This checks startup/rendering, not full gameplay or frame-rate targets.
+For a bounded graphical startup check, run `./tools/run.ps1 -SmokeTest`. It attempts menu, Sector 05, Skyreach and Foundry captures in the project root and exits automatically. This checks startup/rendering, not full gameplay or frame-rate targets.
 
 ## Validation
 

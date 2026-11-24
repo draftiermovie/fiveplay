@@ -149,6 +149,7 @@ pub struct UiAssets {
     /// Vote card images.
     pub map_sector05: Handle<Image>,
     pub map_skyreach: Handle<Image>,
+    pub map_foundry: Handle<Image>,
 }
 impl UiAssets {
     /// Every texture the loading screen waits on.
@@ -168,6 +169,7 @@ impl UiAssets {
             &self.hexagon,
             &self.map_sector05,
             &self.map_skyreach,
+            &self.map_foundry,
         ]
         .into_iter()
     }
@@ -445,7 +447,7 @@ fn screen_title(screen: Screen, session: &Session, board: &Scoreboard) -> String
         Screen::Results => match (board.outcome(session), session.mode) {
             (Outcome::Win, _) => "VICTORY",
             (Outcome::Draw, _) => "DRAW",
-            (Outcome::Loss, Mode::FreeForAll) => {
+            (Outcome::Loss, mode) if !mode.teams() => {
                 return format!("{} PLACE", score::ordinal(board.place(PLAYER)));
             }
             (Outcome::Loss, _) => "DEFEAT",
@@ -760,7 +762,7 @@ fn menu_screen(
             Screen::Results => {
                 column_panel(p, &ui.panel_dark, 18., 26., |p| {
                     let summary = match session.mode {
-                        Mode::FreeForAll => format!(
+                        mode if !mode.teams() => format!(
                             "YOU PLACED {}   /   WINNER {}",
                             score::ordinal(board.place(PLAYER)),
                             score::name(board.leader())
@@ -1023,6 +1025,7 @@ pub fn setup(mut commands: Commands, assets: Res<AssetServer>) {
         hexagon: assets.load("ui/adventure/hexagon.png"),
         map_sector05: assets.load("ui/maps/sector05.png"),
         map_skyreach: assets.load("ui/maps/skyreach.png"),
+        map_foundry: assets.load("ui/maps/foundry.png"),
     });
     commands.insert_resource(Crosshairs {
         images: CROSSHAIRS
@@ -1104,8 +1107,25 @@ pub fn refresh(
                         session.notice.clone()
                     } else {
                         match session.mode {
-                            Mode::CaptureTheFlag | Mode::KingOfTheHill => {
+                            Mode::CaptureTheFlag | Mode::KingOfTheHill | Mode::KillConfirmed => {
                                 objective.hud_line(&session).unwrap_or_default()
+                            }
+                            Mode::GunGame => {
+                                let kills = board.kills[PLAYER].min(u16::MAX as u32) as u16;
+                                let step = (kills / fiveplay_net::GUN_STEP) as usize;
+                                let ladder = fiveplay_net::GUN_LADDER.len();
+                                let leader = board.leader();
+                                let next = match fiveplay_net::GUN_LADDER.get(step + 1) {
+                                    Some(&w) => WEAPONS[w as usize].name,
+                                    None => "WIN",
+                                };
+                                format!(
+                                    "WEAPON {} OF {ladder}  /  NEXT: {next}     LEADER {} {:02} / {}",
+                                    (step + 1).min(ladder),
+                                    score::name(leader),
+                                    board.kills[leader],
+                                    score::GUN_GAME_LIMIT
+                                )
                             }
                             Mode::TeamDeathmatch => format!(
                                 "BLUE {:02}    /    RED {:02}     /     FIRST TO {}",
@@ -1847,6 +1867,7 @@ fn vote_cards(p: &mut ChildSpawnerCommands, ui: &UiAssets, vote: &crate::vote::V
             let image = match map {
                 Map::Sector05 => ui.map_sector05.clone(),
                 Map::Skyreach => ui.map_skyreach.clone(),
+                Map::Foundry => ui.map_foundry.clone(),
             };
             let mut frame = ImageNode::new(image);
             frame.color = base;

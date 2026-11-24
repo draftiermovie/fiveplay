@@ -11,7 +11,7 @@
 //! (alive, enemies, range, fire rate) before applying damage.
 
 pub const MAGIC: [u8; 2] = *b"FP";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 pub const DEFAULT_PORT: u16 = 7777;
 /// Players per server. The client shows remote players with its six bot
 /// avatars, so this is one local player plus six others at most.
@@ -31,12 +31,28 @@ pub const NAME_LEN: usize = 14;
 
 pub const MODE_FFA: u8 = 0;
 pub const MODE_TDM: u8 = 1;
+/// Free-for-all where every kill moves you up `GUN_LADDER`.
+pub const MODE_GUN: u8 = 2;
 pub const MAP_SECTOR05: u8 = 0;
 pub const MAP_SKYREACH: u8 = 1;
+pub const MAP_FOUNDRY: u8 = 2;
 
-/// Kills (FFA) or team kills (TDM) that end a match.
-pub fn score_limit(mode: u8) -> u16 {
-    if mode == MODE_TDM { 30 } else { 20 }
+/// Gun Game weapon order (weapon numbers): assault rifle, SMG, shotgun,
+/// sniper, sidearm. `GUN_STEP` kills on each; a kill on the last one wins.
+pub const GUN_LADDER: [u8; 5] = [0, 1, 3, 2, 4];
+pub const GUN_STEP: u16 = 2;
+/// The weapon a Gun Game player must use after `kills` kills.
+pub fn gun_weapon(kills: u16) -> u8 {
+    GUN_LADDER[((kills / GUN_STEP) as usize).min(GUN_LADDER.len() - 1)]
+}
+
+/// Kills (FFA, Gun Game) or team kills (TDM) that end a match.
+pub const fn score_limit(mode: u8) -> u16 {
+    match mode {
+        MODE_TDM => 30,
+        MODE_GUN => GUN_STEP * GUN_LADDER.len() as u16,
+        _ => 20,
+    }
 }
 
 /// Server-side weapon numbers. Must match the client's `weapons::WEAPONS`
@@ -586,5 +602,14 @@ mod tests {
         assert_eq!(clean_name("  ben<script>  "), "BENSCRIPT");
         assert_eq!(clean_name(""), "PLAYER");
         assert_eq!(clean_name("abcdefghijklmnopqrstuvwxyz").len(), NAME_LEN);
+    }
+    #[test]
+    fn gun_game_ladder() {
+        assert_eq!(gun_weapon(0), 0);
+        assert_eq!(gun_weapon(1), 0);
+        assert_eq!(gun_weapon(2), 1);
+        assert_eq!(gun_weapon(9), 4);
+        assert_eq!(gun_weapon(500), 4);
+        assert_eq!(score_limit(MODE_GUN), 10);
     }
 }

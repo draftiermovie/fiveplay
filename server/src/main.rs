@@ -5,7 +5,8 @@
 //! - `FIVEPLAY_STATUS_PORT`     TCP port for the HTTP status page / health
 //!   check (default 8080, `0` disables it)
 //! - `FIVEPLAY_ROTATION`        maps and modes played in turn, e.g.
-//!   `sector05:ffa,skyreach:tdm` (default `sector05:ffa,skyreach:ffa`)
+//!   `sector05:ffa,skyreach:tdm,foundry:gun`; maps `sector05`, `skyreach`,
+//!   `foundry`, modes `ffa`, `tdm`, `gun` (default `sector05:ffa,skyreach:ffa`)
 //! - `FIVEPLAY_MATCH_SECONDS`   match length (default 300)
 //! - `FIVEPLAY_MAX_PLAYERS`     1-6 (default 6)
 //!

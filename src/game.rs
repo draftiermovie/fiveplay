@@ -27,27 +27,53 @@ pub enum Mode {
     TeamDeathmatch,
     CaptureTheFlag,
     KingOfTheHill,
+    /// Free for all; every kill moves you to the next weapon of a fixed
+    /// ladder, and a kill with the last one wins (see `fiveplay_net::GUN_LADDER`).
+    GunGame,
+    /// Teams; a kill only scores once a teammate picks up the dropped tag,
+    /// and the victim's team can deny it (see `objective`).
+    KillConfirmed,
 }
 impl Mode {
+    pub const ALL: [Mode; 6] = [
+        Mode::FreeForAll,
+        Mode::TeamDeathmatch,
+        Mode::CaptureTheFlag,
+        Mode::KingOfTheHill,
+        Mode::GunGame,
+        Mode::KillConfirmed,
+    ];
     pub fn name(self) -> &'static str {
         match self {
             Mode::FreeForAll => "FREE FOR ALL",
             Mode::TeamDeathmatch => "TEAM DEATHMATCH",
             Mode::CaptureTheFlag => "CAPTURE THE FLAG",
             Mode::KingOfTheHill => "KING OF THE HILL",
+            Mode::GunGame => "GUN GAME",
+            Mode::KillConfirmed => "KILL CONFIRMED",
         }
+    }
+    /// Short name used in the save file.
+    pub fn key(self) -> &'static str {
+        match self {
+            Mode::FreeForAll => "ffa",
+            Mode::TeamDeathmatch => "tdm",
+            Mode::CaptureTheFlag => "ctf",
+            Mode::KingOfTheHill => "koth",
+            Mode::GunGame => "gun",
+            Mode::KillConfirmed => "kc",
+        }
+    }
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.key() == key)
     }
     pub fn next(self) -> Self {
-        match self {
-            Mode::FreeForAll => Mode::TeamDeathmatch,
-            Mode::TeamDeathmatch => Mode::CaptureTheFlag,
-            Mode::CaptureTheFlag => Mode::KingOfTheHill,
-            Mode::KingOfTheHill => Mode::FreeForAll,
-        }
+        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
     }
-    /// Blue against Red (everything except Free For All).
+    /// Blue against Red (everything except Free For All and Gun Game).
     pub fn teams(self) -> bool {
-        self != Mode::FreeForAll
+        !matches!(self, Mode::FreeForAll | Mode::GunGame)
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -57,19 +83,32 @@ pub enum Map {
     Sector05,
     /// Open grass platforms built from the Kenney Platformer Kit.
     Skyreach,
+    /// A dusk-lit container yard with raised gantries at both ends.
+    Foundry,
 }
 impl Map {
+    pub const ALL: [Map; 3] = [Map::Sector05, Map::Skyreach, Map::Foundry];
     pub fn name(self) -> &'static str {
         match self {
             Map::Sector05 => "SECTOR 05",
             Map::Skyreach => "SKYREACH",
+            Map::Foundry => "FOUNDRY",
         }
     }
-    pub fn next(self) -> Self {
+    /// Short name used in the save file.
+    pub fn key(self) -> &'static str {
         match self {
-            Map::Sector05 => Map::Skyreach,
-            Map::Skyreach => Map::Sector05,
+            Map::Sector05 => "sector05",
+            Map::Skyreach => "skyreach",
+            Map::Foundry => "foundry",
         }
+    }
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.key() == key)
+    }
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
     }
 }
 #[derive(Resource)]

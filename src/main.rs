@@ -171,12 +171,51 @@ fn main() {
             .chain(),
     )
     .add_systems(Last, save::autosave);
-    if smoke && connect.is_some() {
+    if std::env::var("FIVEPLAY_THUMBNAIL").is_ok() {
+        app.add_systems(Update, thumbnail.after(ui::fps));
+    } else if smoke && connect.is_some() {
         app.add_systems(Update, online_smoke_test);
     } else if smoke {
         app.add_systems(Update, smoke_test);
     }
     app.run();
+}
+
+/// `FIVEPLAY_THUMBNAIL=<map>` (e.g. `foundry`): shows that map from the menu
+/// camera with every UI element hidden, saves `<map>-thumbnail.png` and
+/// exits. Scaled to 640x360 it is the vote card art in `assets/ui/maps`.
+fn thumbnail(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut session: ResMut<Session>,
+    mut nodes: Query<&mut Visibility, (With<Node>, Without<ChildOf>)>,
+    mut taken: Local<Option<f32>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+    let key = std::env::var("FIVEPLAY_THUMBNAIL").unwrap_or_default();
+    let Some(map) = Map::from_key(&key) else {
+        error!("FIVEPLAY_THUMBNAIL: unknown map {key:?}");
+        exit.write(AppExit::error());
+        return;
+    };
+    session.map = map;
+    for mut visibility in &mut nodes {
+        *visibility = Visibility::Hidden;
+    }
+    let t = time.elapsed_secs();
+    match *taken {
+        None if session.screen == Screen::Menu && t > 6. => {
+            commands
+                .spawn(Screenshot::primary_window())
+                .observe(save_to_disk(format!("{key}-thumbnail.png")));
+            *taken = Some(t);
+        }
+        Some(at) if t > at + 1.5 => {
+            exit.write(AppExit::Success);
+        }
+        _ => {}
+    }
 }
 
 /// Launches both the menu and match paths, captures frames and exits without user input.
@@ -193,13 +232,14 @@ fn smoke_test(
 ) {
     use bevy::render::view::screenshot::{Screenshot, save_to_disk};
     let t = time.elapsed_secs();
-    // FIVEPLAY_SOAK=<seconds> keeps the Skyreach match running that long
-    // before the final capture, logging what the bots do (AI check).
+    // FIVEPLAY_SOAK=<seconds> keeps the last match (Foundry) running that
+    // long before the final capture, logging what the bots do (AI check).
+    // FIVEPLAY_SMOKE_MODE=<ffa|tdm|ctf|koth|gun|kc> picks the mode played.
     let soak: f32 = std::env::var("FIVEPLAY_SOAK")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.);
-    if soak > 0. && *stage == 4 && t - *report > 5. {
+    if soak > 0. && *stage == 6 && t - *report > 5. {
         *report = t;
         for (bot, tr) in &bots {
             info!(
@@ -228,6 +268,12 @@ fn smoke_test(
         // Start through the real PLAY action so the match resets and the
         // player deploys at the map's spawn point.
         session.map = Map::Sector05;
+        if let Some(mode) = std::env::var("FIVEPLAY_SMOKE_MODE")
+            .ok()
+            .and_then(|m| Mode::from_key(&m))
+        {
+            session.mode = mode;
+        }
         actions.0.push(ui::Action::Launch);
         *stage = 2;
     } else if *stage == 2 && t > 7.0 {
@@ -239,12 +285,21 @@ fn smoke_test(
         session.map = Map::Skyreach;
         actions.0.push(ui::Action::Launch);
         *stage = 4;
-    } else if *stage == 4 && t > 11.0 + soak {
+    } else if *stage == 4 && t > 11.0 {
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk("skyreach-preview.png"));
         *stage = 5;
-    } else if *stage == 5 && t > 13.0 + soak {
+    } else if *stage == 5 && t > 12.0 {
+        session.map = Map::Foundry;
+        actions.0.push(ui::Action::Launch);
+        *stage = 6;
+    } else if *stage == 6 && t > 15.0 + soak {
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk("foundry-preview.png"));
+        *stage = 7;
+    } else if *stage == 7 && t > 17.0 + soak {
         info!("objective: blue {} red {}", session.blue, session.red);
         for id in board.standings() {
             info!(
@@ -334,12 +389,21 @@ fn online_smoke_test(
                 })
                 .and_then(|(b, _, _)| net.server_id(b.index));
             info!("online test: shooting server player {target:?}");
+            // Gun Game only accepts the ladder weapon (the assault rifle at
+            // first): three headshots kill.
+            let (weapon, shots) = if session.mode == Mode::GunGame {
+                (fiveplay_net::gun_weapon(0), 3)
+            } else {
+                (2, 1)
+            };
             if let Some(victim) = target {
-                net.queue(fiveplay_net::ClientMsg::Hit {
-                    victim,
-                    weapon: 2,
-                    zone: 0,
-                });
+                for _ in 0..shots {
+                    net.queue(fiveplay_net::ClientMsg::Hit {
+                        victim,
+                        weapon,
+                        zone: 0,
+                    });
+                }
             }
         }
     } else if *stage == 2 && since > total - 2. {
