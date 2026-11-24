@@ -61,6 +61,10 @@ Defaults below. Everything except mouse, weapon keys and Escape can be rebound u
 
 Xbox, PlayStation (DualShock 4, DualSense), Nintendo Switch Pro and most generic controllers work through Bevy's gilrs backend (Windows.Gaming.Input on Windows, evdev on Linux); just plug in or pair. The game detects the controller type and shows matching button names (Nintendo pads use their own A/B/X/Y lettering), announces connects and disconnects, and switches on-screen prompts to whichever input you used last. Menus are fully navigable: D-pad or left stick to move, A/Cross to select, B/Circle to go back, left/right to adjust sliders. Looking uses a dead zone and a quadratic response curve, halves while aiming, and has light aim assist (slower turning over an enemy). Firing and taking hits rumble the controller. Settings has a **Controller look** speed slider and **Invert Y (controller)**; the Controls screen lists the full controller layout. If a controller is not detected on Windows, Steam's controller support or DS4Windows can present it as an Xbox controller.
 
+## Match vote
+
+PLAY (and PLAY AGAIN) opens a vote between three map + mode options, each shown as a card with a screenshot of the map and its name and mode on top. You have 5 seconds: click a card, press 1-3, or use a controller. The six bots vote at random moments. Votes stay hidden until everyone has voted (or time runs out); then each card shows who picked it with small icons in its bottom-left corner (YOU, and each bot's number in its colour), the winner is outlined in gold, and ties are settled at random. The screen fades to black showing the winning map and mode, loads it, and fades into the match. Both maps always appear among the three options. The card images live in `assets/ui/maps/`.
+
 ## Modes and bots
 
 - **Free For All**: every combatant (you and six bots) fights everyone else. First to 20 kills wins; you win only with sole first place.
@@ -68,7 +72,7 @@ Xbox, PlayStation (DualShock 4, DualSense), Nintendo Switch Pro and most generic
 - **Capture the Flag**: Blue's base is on the east side, Red's on the west, each marked by a glowing pad with the team flag. Walk over the enemy flag to take it and carry it to your own pad while your own flag is home. A carrier who dies drops the flag; a teammate touching it returns it, otherwise it returns on its own after 15 s. First to 3 captures wins.
 - **King of the Hill**: hold the glowing zone in the arena centre (the raised hill on Skyreach). A team scores a point per second while only its players are inside; the zone turns blue, red, or yellow when contested. First to 100 wins.
 
-Choose the mode with **MODE /** in the main menu (saved). In the team modes you deploy on Blue's side and bots respawn on their own side. Objective bots play the objective: one defender per team guards its base, the others go for the enemy flag, escort their carrier, chase whoever has their own flag and return it when dropped; flag carriers and hill holders don't retreat to cover. In King of the Hill every bot pushes into the zone.
+The vote picks the mode and map for each match; **MODE /** and **MAP /** in the main menu set the defaults (saved). In the team modes you deploy on Blue's side and bots respawn on their own side. Objective bots play the objective: one defender per team guards its base, the others go for the enemy flag, escort their carrier, chase whoever has their own flag and return it when dropped; flag carriers and hill holders don't retreat to cover. In King of the Hill every bot pushes into the zone.
 
 Hold **Tab** during a match for the standings; the kill feed (kills and flag events) sits top right. Matches last five minutes at most.
 
@@ -108,6 +112,7 @@ Settings has sliders for mouse sensitivity, field of view and audio volume (drag
 - `score.rs`: per-combatant standings, team scores, win conditions and the kill feed.
 - `objective.rs`: Capture the Flag and King of the Hill rules, bot objective goals and the flag/hill visuals.
 - `combat.rs`: bot state, soldier hit areas and effect cleanup.
+- `vote.rs`: the pre-match vote (options, bot votes, reveal) and the fade transition into the match.
 - `spectate.rs`: kill-cam and spectator camera while dead, redeploy countdown.
 - `soldier.rs`: the procedural soldier model, first-person arms, animation and colours.
 - `ui.rs`: menus, HUD, FPS counter, loadout, settings and measured loading display.

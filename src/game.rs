@@ -17,9 +17,12 @@ pub enum Screen {
     Paused,
     Dead,
     Results,
+    /// Pre-match map + mode vote.
+    Vote,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Mode {
+    #[default]
     FreeForAll,
     TeamDeathmatch,
     CaptureTheFlag,
@@ -47,9 +50,10 @@ impl Mode {
         self != Mode::FreeForAll
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Map {
     /// The original enclosed concrete arena.
+    #[default]
     Sector05,
     /// Open grass platforms built from the Kenney Platformer Kit.
     Skyreach,

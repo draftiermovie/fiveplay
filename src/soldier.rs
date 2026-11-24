@@ -63,6 +63,11 @@ const COLOURS: [(f32, f32, f32); 8] = [
     (0.2, 0.75, 0.8),   // teal
     (0.55, 0.35, 0.9),  // violet
 ];
+/// Bot `index`'s Free For All colour (also used for its vote icon).
+pub fn colour(index: usize) -> Color {
+    let (r, g, b) = COLOURS[2 + index % 6];
+    Color::srgb(r, g, b)
+}
 pub fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,

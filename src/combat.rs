@@ -93,6 +93,10 @@ impl Bot {
         self.cover_time = 0.;
         self.vantage = None;
         self.velocity = Vec3::ZERO;
+        // A bot killed mid-shot must not come back still in its recoil and
+        // aim pose.
+        self.kick = 0.;
+        self.aim_pitch = 0.;
         self.cooldown = 1. + self.index as f32 * 0.15;
     }
 }

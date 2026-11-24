@@ -13,6 +13,7 @@ mod score;
 mod soldier;
 mod spectate;
 mod ui;
+mod vote;
 mod weapons;
 mod world;
 
@@ -81,6 +82,7 @@ fn main() {
     .init_resource::<spectate::Spectate>()
     .init_resource::<gamepad::Pad>()
     .init_resource::<gamepad::PadFocus>()
+    .init_resource::<vote::Vote>()
     .add_systems(
         Startup,
         (
@@ -89,6 +91,7 @@ fn main() {
             objective::setup,
             soldier::setup,
             gamepad::setup,
+            vote::setup,
         )
             .chain(),
     )
@@ -106,6 +109,7 @@ fn main() {
                 game::input,
                 gamepad::menu,
                 ui::interact,
+                vote::update,
                 ui::hover,
                 player::look,
                 player::movement,
@@ -125,6 +129,7 @@ fn main() {
                 ui::refresh,
                 ui::fps,
                 gamepad::toast,
+                vote::fade,
                 ui::standings,
                 ui::sliders,
                 objective::visuals,
@@ -192,7 +197,7 @@ fn smoke_test(
         // Start through the real PLAY action so the match resets and the
         // player deploys at the map's spawn point.
         session.map = Map::Sector05;
-        actions.0.push(ui::Action::Play);
+        actions.0.push(ui::Action::Launch);
         *stage = 2;
     } else if *stage == 2 && t > 7.0 {
         commands
@@ -201,7 +206,7 @@ fn smoke_test(
         *stage = 3;
     } else if *stage == 3 && t > 8.0 {
         session.map = Map::Skyreach;
-        actions.0.push(ui::Action::Play);
+        actions.0.push(ui::Action::Launch);
         *stage = 4;
     } else if *stage == 4 && t > 11.0 + soak {
         commands

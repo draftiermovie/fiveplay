@@ -24,6 +24,18 @@ impl Default for Player {
         }
     }
 }
+impl Player {
+    /// Fresh state for a (re)deploy. Clears an unfinished slide too: a slide
+    /// in progress when the player died would otherwise pin the new life's
+    /// horizontal speed at zero (and roll the camera) until it ran out.
+    pub fn redeploy(&mut self) {
+        *self = Self {
+            yaw: self.yaw,
+            pitch: self.pitch,
+            ..default()
+        };
+    }
+}
 /// Radians per second at full right-stick deflection and sensitivity 1.
 const PAD_TURN: f32 = 3.;
 pub fn look(
@@ -199,5 +211,26 @@ pub fn movement(
     p.hurt_time += dt;
     if p.hurt_time > 5. {
         p.health = (p.health + dt * 8.).min(100.);
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn redeploy_clears_slide_and_keeps_view() {
+        let mut p = Player {
+            health: -5.,
+            yaw: 1.2,
+            pitch: -0.3,
+            velocity: Vec3::new(12., -4., 0.),
+            slide: 0.5,
+            grounded: false,
+            hurt_time: 0.,
+        };
+        p.redeploy();
+        assert_eq!(p.health, 100.);
+        assert_eq!(p.slide, 0.);
+        assert_eq!(p.velocity, Vec3::ZERO);
+        assert_eq!((p.yaw, p.pitch), (1.2, -0.3));
     }
 }

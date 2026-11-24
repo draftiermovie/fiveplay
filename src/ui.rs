@@ -71,6 +71,10 @@ pub enum Action {
     Controls,
     Rebind(Bind),
     PrevTarget,
+    /// Vote for option 0..3 on the vote screen.
+    Vote(usize),
+    /// Start the match (pushed by the vote once the map is ready).
+    Launch,
     NextTarget,
     ResetControls,
     Fps,
@@ -138,6 +142,9 @@ pub struct UiAssets {
     pub bar_fill: Handle<Image>,
     pub banner: Handle<Image>,
     pub hexagon: Handle<Image>,
+    /// Vote card images.
+    pub map_sector05: Handle<Image>,
+    pub map_skyreach: Handle<Image>,
 }
 impl UiAssets {
     /// Every texture the loading screen waits on.
@@ -155,6 +162,8 @@ impl UiAssets {
             &self.bar_fill,
             &self.banner,
             &self.hexagon,
+            &self.map_sector05,
+            &self.map_skyreach,
         ]
         .into_iter()
     }
@@ -420,6 +429,7 @@ fn screen_title(screen: Screen, session: &Session, board: &Scoreboard) -> String
         Screen::Loadout => "SELECT PRIMARY",
         Screen::Settings => "OPERATIONS / SETTINGS",
         Screen::Controls => "OPERATIONS / CONTROLS",
+        Screen::Vote => "VOTE FOR THE NEXT MATCH",
         Screen::Profile => "SERVICE RECORD",
         Screen::Paused => "MATCH PAUSED",
         Screen::Dead => {
@@ -451,6 +461,7 @@ fn menu_screen(
     board: &Scoreboard,
     rebind: &Rebind,
     pad: &crate::gamepad::Pad,
+    vote: &crate::vote::Vote,
 ) {
     let screen = session.screen;
     let title = screen_title(screen, session, board);
@@ -743,6 +754,15 @@ fn menu_screen(
                     button(p, ui, "MAIN MENU", Action::Back);
                 });
             }
+            Screen::Vote => {
+                vote_cards(p, ui, vote);
+                p.spawn(Node {
+                    width: percent(100),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                })
+                .with_children(|p| label(p, "", 16., SKY, 11));
+            }
             Screen::Playing => {}
         }
     });
@@ -978,6 +998,8 @@ pub fn setup(mut commands: Commands, assets: Res<AssetServer>) {
         bar_fill: assets.load("ui/adventure/bar_fill.png"),
         banner: assets.load("ui/adventure/banner.png"),
         hexagon: assets.load("ui/adventure/hexagon.png"),
+        map_sector05: assets.load("ui/maps/sector05.png"),
+        map_skyreach: assets.load("ui/maps/skyreach.png"),
     });
     commands.insert_resource(Crosshairs {
         images: CROSSHAIRS
@@ -1018,12 +1040,13 @@ pub fn refresh(
     mut labels: Query<(&Label, &mut Text)>,
     mut bars: Query<&mut Node, With<LoadingBar>>,
     mut reticles: Query<(&mut ImageNode, &mut UiTransform), With<Crosshair>>,
-    (board, rebind, objective, spectate, pad): (
+    (board, rebind, objective, spectate, pad, vote): (
         Res<Scoreboard>,
         Res<Rebind>,
         Res<crate::objective::Objective>,
         Res<crate::spectate::Spectate>,
         Res<crate::gamepad::Pad>,
+        Res<crate::vote::Vote>,
     ),
 ) {
     let screen = session.screen;
@@ -1110,6 +1133,7 @@ pub fn refresh(
                 7 => spectate.killer_line(),
                 8 => spectate.focus_line(&settings, &pad),
                 9 => spectate.redeploy_line(&settings, &pad),
+                11 => vote.status(&pad),
                 10 => {
                     if pad.active {
                         pad.style.help()
@@ -1126,7 +1150,7 @@ pub fn refresh(
         // Hit feedback and ADS shrink are driven here so the reticle stays a
         // single image node instead of swapping textures.
         let hit = session.hit > 0.;
-        let base = if mouse.pressed(MouseButton::Right) {
+        let base = if mouse.pressed(MouseButton::Right) || pad.aim {
             0.78
         } else {
             1.
@@ -1185,6 +1209,7 @@ pub fn refresh(
                     &board,
                     &rebind,
                     &pad,
+                    &vote,
                 );
             }
         });
@@ -1200,29 +1225,41 @@ pub fn interact(
     mut window: Single<&mut Window>,
     mut exit: MessageWriter<AppExit>,
     mut bots: Query<(&mut crate::combat::Bot, &mut Transform, &mut Visibility), Without<Player>>,
-    (mut board, mut rebind, mut objective, mut spectate): (
+    (mut board, mut rebind, mut objective, mut spectate, mut vote): (
         ResMut<Scoreboard>,
         ResMut<Rebind>,
         ResMut<crate::objective::Objective>,
         ResMut<crate::spectate::Spectate>,
+        ResMut<crate::vote::Vote>,
     ),
 ) {
     for action in actions.0.drain(..) {
         match action {
             Action::Play => {
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(7, |d| d.as_nanos() as u64);
+                vote.begin(seed);
+                session.screen = Screen::Vote;
+            }
+            Action::Vote(option) => {
+                vote.cast(PLAYER, option);
+                state.0 = Screen::Loading;
+            }
+            Action::Launch => {
                 board.reset();
                 objective.reset();
                 *spectate = default();
                 session.notice_time = 0.;
                 session.damage = 0.;
+                session.hit = 0.;
                 session.kills = 0;
                 session.deaths = 0;
                 session.blue = 0;
                 session.red = 0;
                 session.remaining = 300.;
                 session.screen = Screen::Playing;
-                player.0.health = 100.;
-                player.0.velocity = Vec3::ZERO;
+                player.0.redeploy();
                 player.0.yaw = 0.;
                 player.0.pitch = 0.;
                 player.1.translation = crate::world::player_spawn(session.map, session.mode);
@@ -1288,8 +1325,8 @@ pub fn interact(
                     continue;
                 }
                 *spectate = default();
-                player.0.health = 100.;
-                player.0.velocity = Vec3::ZERO;
+                session.damage = 0.;
+                player.0.redeploy();
                 player.1.translation = crate::world::player_spawn(session.map, session.mode);
                 let selected = arsenal.selected;
                 *arsenal = Arsenal::default();
@@ -1741,4 +1778,134 @@ pub fn sliders(
             text.0 = caption.0.caption(&settings);
         }
     }
+}
+
+const GOLD: Color = Color::srgb(1., 0.8, 0.25);
+/// The three vote cards: map image, name and mode on top, and (once
+/// revealed) a voter icon for everyone who picked it in the bottom left.
+fn vote_cards(p: &mut ChildSpawnerCommands, ui: &UiAssets, vote: &crate::vote::Vote) {
+    p.spawn(Node {
+        flex_direction: FlexDirection::Row,
+        flex_wrap: FlexWrap::Wrap,
+        column_gap: px(18),
+        row_gap: px(18),
+        justify_content: JustifyContent::Center,
+        ..default()
+    })
+    .with_children(|row| {
+        for (i, (map, mode)) in vote.options.iter().enumerate() {
+            let revealed = vote.revealed();
+            let winner = revealed && vote.winner == i;
+            let chosen = vote.votes[PLAYER] == Some(i);
+            let base = if revealed && !winner {
+                Color::srgb(0.38, 0.4, 0.45)
+            } else {
+                Color::WHITE
+            };
+            let image = match map {
+                Map::Sector05 => ui.map_sector05.clone(),
+                Map::Skyreach => ui.map_skyreach.clone(),
+            };
+            let mut frame = ImageNode::new(image);
+            frame.color = base;
+            let outline = if winner {
+                GOLD
+            } else if chosen {
+                SKY
+            } else {
+                Color::srgba(1., 1., 1., 0.15)
+            };
+            row.spawn((
+                Button,
+                Hovered::default(),
+                Action::Vote(i),
+                ButtonTint {
+                    base,
+                    hover: if revealed {
+                        base
+                    } else {
+                        Color::srgb(0.8, 0.92, 1.05)
+                    },
+                },
+                frame,
+                Node {
+                    width: px(448),
+                    height: px(252),
+                    border: UiRect::all(px(if winner || chosen { 5. } else { 2. })),
+                    border_radius: BorderRadius::all(px(10)),
+                    flex_direction: FlexDirection::Column,
+                    justify_content: JustifyContent::SpaceBetween,
+                    ..default()
+                },
+                BorderColor::all(outline),
+                UiTransform::IDENTITY,
+            ))
+            .with_children(|card| {
+                // Name band across the top of the image.
+                card.spawn((
+                    Node {
+                        width: percent(100),
+                        padding: UiRect::axes(px(12), px(8)),
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        row_gap: px(2),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.01, 0.02, 0.04, 0.68)),
+                ))
+                .with_children(|band| {
+                    text(
+                        band,
+                        map.name(),
+                        24.,
+                        if winner { GOLD } else { Color::WHITE },
+                    );
+                    text(band, &format!("{}   /   {}", mode.name(), i + 1), 13., SKY);
+                });
+                // Voter icons, bottom left, once everyone has voted.
+                card.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    column_gap: px(5),
+                    row_gap: px(5),
+                    padding: UiRect::all(px(9)),
+                    ..default()
+                })
+                .with_children(|chips| {
+                    if !revealed {
+                        return;
+                    }
+                    for (voter, choice) in vote.votes.iter().enumerate() {
+                        if *choice == Some(i) {
+                            vote_chip(chips, voter);
+                        }
+                    }
+                });
+            });
+        }
+    });
+}
+/// A small round icon for one voter: YOU, or the bot's number in its colour.
+fn vote_chip(p: &mut ChildSpawnerCommands, voter: usize) {
+    let (name, fill) = if voter == PLAYER {
+        ("YOU".to_string(), SKY)
+    } else {
+        (format!("{voter:02}"), crate::soldier::colour(voter - 1))
+    };
+    p.spawn((
+        Node {
+            width: px(34),
+            height: px(34),
+            border: UiRect::all(px(2)),
+            border_radius: BorderRadius::MAX,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        BackgroundColor(fill),
+        BorderColor::all(Color::srgba(1., 1., 1., 0.9)),
+    ))
+    .with_children(|chip| {
+        text(chip, &name, if voter == PLAYER { 10. } else { 13. }, INK);
+    });
 }
