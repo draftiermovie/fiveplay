@@ -6,6 +6,11 @@
 //! keeps hit detection, nameplates, the spectator camera and the standings
 //! working unchanged. The local player moves freely; the server owns health,
 //! deaths, kills, the clock and respawns, and validates every reported hit.
+//!
+//! The socket itself lives on the background Tokio runtime (see
+//! `background`): a connection task looks up the address, then moves
+//! datagrams between the socket and two small bounded channels. The game
+//! thread only ever does non-blocking channel reads and writes.
 use crate::{
     combat::{Bot, Effect},
     game::*,
@@ -26,12 +31,21 @@ use bevy::{
     prelude::*,
 };
 use fiveplay_net::{self as proto, ClientMsg, ServerMsg, Snapshot};
-use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::net::{SocketAddr, UdpSocket};
+use tokio::sync::mpsc::{self, error::TrySendError};
 
 /// Remote avatars: one per bot entity.
 const SLOTS: usize = COMBATANTS - 1;
 /// Feet sit this far below the capsule centre the protocol sends.
 const CENTRE_TO_FEET: f32 = 0.87;
+/// Channel sizes between the game and the connection task. The game drains
+/// both every frame (about 30 messages a second each way), so these only
+/// fill during a long stall; then new messages are dropped, as UDP would,
+/// instead of piling up in memory.
+const OUT_QUEUE: usize = 64;
+const IN_QUEUE: usize = 32;
+/// Largest datagram read (snapshots are a few hundred bytes).
+const RECV_BYTES: usize = 2048;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Link {
@@ -143,31 +157,20 @@ impl Net {
             self.status = "ENTER A SERVER ADDRESS FIRST".into();
             return;
         }
-        let resolved = endpoint.to_socket_addrs().map(|addrs| {
-            let all: Vec<SocketAddr> = addrs.collect();
-            all.iter().find(|a| a.is_ipv4()).or(all.first()).copied()
+        let Some(runtime) = crate::background::handle() else {
+            self.status = "NETWORK ERROR: NO BACKGROUND THREAD".into();
+            return;
+        };
+        // The address lookup can take seconds; it happens in the task.
+        let (out, out_rx) = mpsc::channel(OUT_QUEUE);
+        let (events_tx, events) = mpsc::channel(IN_QUEUE);
+        runtime.spawn(connection(endpoint.clone(), out_rx, events_tx));
+        info!("Connecting to {endpoint}");
+        self.conn = Some(Conn {
+            out,
+            events,
+            bye: None,
         });
-        let server = match resolved {
-            Ok(Some(addr)) => addr,
-            _ => {
-                self.status = format!("CANNOT FIND {}", endpoint.to_uppercase());
-                return;
-            }
-        };
-        let bind: SocketAddr = if server.is_ipv4() {
-            ([0, 0, 0, 0], 0).into()
-        } else {
-            (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
-        };
-        let socket = match UdpSocket::bind(bind).and_then(|s| s.set_nonblocking(true).map(|_| s)) {
-            Ok(s) => s,
-            Err(err) => {
-                self.status = format!("NETWORK ERROR: {err}").to_uppercase();
-                return;
-            }
-        };
-        info!("Connecting to {endpoint} ({server})");
-        self.conn = Some(Conn { socket, server });
         self.link = Link::Connecting;
         self.started = self.clock;
         self.last_recv = self.clock;
@@ -196,35 +199,31 @@ impl Net {
     }
     fn send_now(&self, msg: &ClientMsg) {
         if let Some(c) = &self.conn {
-            let _ = c.socket.send_to(&msg.encode(), c.server);
+            // Full only if the I/O thread is stuck: drop, as UDP would.
+            let _ = c.out.try_send(msg.clone());
         }
     }
-    fn receive(&mut self) -> Vec<ServerMsg> {
+    /// Everything the server sent since last frame, or why the connection
+    /// failed (the address could not be found or no socket could be opened).
+    fn receive(&mut self) -> Result<Vec<ServerMsg>, String> {
         let mut out = Vec::new();
-        let Some(Conn { socket, server }) = &self.conn else {
-            return out;
+        let Some(conn) = &mut self.conn else {
+            return Ok(out);
         };
-        let server = *server;
-        let mut buf = [0u8; 4096];
-        loop {
-            match socket.recv_from(&mut buf) {
-                Ok((n, from)) if from == server => {
-                    if let Some(msg) = ServerMsg::decode(&buf[..n]) {
-                        out.push(msg);
-                    }
+        while let Ok(event) = conn.events.try_recv() {
+            match event {
+                Event::Ready { server, bye } => {
+                    info!("Socket open to {server}");
+                    conn.bye = Some((bye, server));
                 }
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                // "Port unreachable" (no server there yet): keep trying until
-                // the connection attempt times out.
-                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => continue,
-                Err(_) => break,
+                Event::Failed(reason) => return Err(reason),
+                Event::Message(msg) => out.push(msg),
             }
         }
         if !out.is_empty() {
             self.last_recv = self.clock;
         }
-        out
+        Ok(out)
     }
     /// Keeps each remote player in the same avatar for as long as they stay.
     fn assign_slots(&mut self, snap: &Snapshot) {
@@ -269,15 +268,98 @@ impl Net {
     }
 }
 
-/// The open connection. Dropping it (leaving, or closing the game) tells
-/// the server right away instead of letting it time out.
+/// The game's end of a connection task. Dropping it (leaving, or closing
+/// the game) closes the channels, which ends the task, and says goodbye
+/// right away so the server does not wait for a timeout. The goodbye is sent
+/// from this thread because the game may be exiting.
 struct Conn {
-    socket: UdpSocket,
-    server: SocketAddr,
+    out: mpsc::Sender<ClientMsg>,
+    events: mpsc::Receiver<Event>,
+    /// A copy of the task's socket, once it is open.
+    bye: Option<(UdpSocket, SocketAddr)>,
 }
 impl Drop for Conn {
     fn drop(&mut self) {
-        let _ = self.socket.send_to(&ClientMsg::Bye.encode(), self.server);
+        if let Some((socket, server)) = &self.bye {
+            let _ = socket.send_to(&ClientMsg::Bye.encode(), server);
+        }
+    }
+}
+
+/// What the connection task reports to the game.
+enum Event {
+    Ready { server: SocketAddr, bye: UdpSocket },
+    Failed(String),
+    Message(ServerMsg),
+}
+
+/// Looks up `endpoint`, opens a socket and relays datagrams until the game
+/// drops its end. Runs on the background runtime.
+async fn connection(
+    endpoint: String,
+    mut out: mpsc::Receiver<ClientMsg>,
+    events: mpsc::Sender<Event>,
+) {
+    let found = tokio::net::lookup_host(endpoint.as_str())
+        .await
+        .ok()
+        .and_then(|addrs| {
+            let all: Vec<SocketAddr> = addrs.collect();
+            all.iter().find(|a| a.is_ipv4()).or(all.first()).copied()
+        });
+    let Some(server) = found else {
+        let reason = format!("CANNOT FIND {}", endpoint.to_uppercase());
+        let _ = events.send(Event::Failed(reason)).await;
+        return;
+    };
+    let bind: SocketAddr = if server.is_ipv4() {
+        ([0, 0, 0, 0], 0).into()
+    } else {
+        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+    };
+    let opened = UdpSocket::bind(bind).and_then(|s| {
+        s.set_nonblocking(true)?;
+        let bye = s.try_clone()?;
+        Ok((tokio::net::UdpSocket::from_std(s)?, bye))
+    });
+    let (socket, bye) = match opened {
+        Ok(pair) => pair,
+        Err(err) => {
+            let reason = format!("NETWORK ERROR: {err}").to_uppercase();
+            let _ = events.send(Event::Failed(reason)).await;
+            return;
+        }
+    };
+    if events.send(Event::Ready { server, bye }).await.is_err() {
+        return;
+    }
+    let mut buf = vec![0u8; RECV_BYTES];
+    loop {
+        tokio::select! {
+            msg = out.recv() => match msg {
+                Some(msg) => {
+                    let _ = socket.send_to(&msg.encode(), server).await;
+                }
+                // The game closed the connection (and said goodbye).
+                None => return,
+            },
+            received = socket.recv_from(&mut buf) => match received {
+                Ok((n, from)) if from == server => {
+                    if let Some(msg) = ServerMsg::decode(&buf[..n]) {
+                        match events.try_send(Event::Message(msg)) {
+                            Err(TrySendError::Closed(_)) => return,
+                            // A stalled game frame: drop instead of piling up.
+                            Err(TrySendError::Full(_)) | Ok(()) => {}
+                        }
+                    }
+                }
+                Ok(_) => {}
+                // "Port unreachable" (no server there yet): keep trying until
+                // the game gives up on the connection attempt.
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+            },
+        }
     }
 }
 
@@ -388,7 +470,13 @@ pub fn update(
         net.disconnect("LEFT THE SERVER");
         return;
     }
-    let messages = net.receive();
+    let messages = match net.receive() {
+        Ok(messages) => messages,
+        Err(reason) => {
+            net.disconnect(&reason);
+            return;
+        }
+    };
     for msg in messages {
         match msg {
             ServerMsg::Welcome { id } => {
@@ -723,6 +811,71 @@ fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Waits for the next event from a connection task.
+    fn next_event(events: &mut mpsc::Receiver<Event>) -> Event {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(event) = events.try_recv() {
+                return event;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no event from the connection task"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    #[test]
+    fn connection_task_relays_both_ways_and_reports_bad_addresses() {
+        let runtime = crate::background::handle().unwrap();
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let endpoint = server.local_addr().unwrap().to_string();
+        let (out, out_rx) = mpsc::channel(OUT_QUEUE);
+        let (events_tx, mut events) = mpsc::channel(IN_QUEUE);
+        runtime.spawn(connection(endpoint, out_rx, events_tx));
+        let Event::Ready { server: addr, bye } = next_event(&mut events) else {
+            panic!("expected the socket to open");
+        };
+        assert_eq!(addr, server.local_addr().unwrap());
+        // Game -> server.
+        out.try_send(ClientMsg::Hello { name: "A".into() }).unwrap();
+        let mut buf = [0u8; 512];
+        let (n, client) = server.recv_from(&mut buf).unwrap();
+        assert_eq!(
+            ClientMsg::decode(&buf[..n]),
+            Some(ClientMsg::Hello { name: "A".into() })
+        );
+        // Server -> game.
+        server
+            .send_to(&ServerMsg::Welcome { id: 3 }.encode(), client)
+            .unwrap();
+        assert!(matches!(
+            next_event(&mut events),
+            Event::Message(ServerMsg::Welcome { id: 3 })
+        ));
+        // Dropping the game's end ends the task; the kept copy says goodbye.
+        drop(out);
+        bye.send_to(&ClientMsg::Bye.encode(), addr).unwrap();
+        let (n, _) = server.recv_from(&mut buf).unwrap();
+        assert_eq!(ClientMsg::decode(&buf[..n]), Some(ClientMsg::Bye));
+
+        let (_out, out_rx) = mpsc::channel(OUT_QUEUE);
+        let (events_tx, mut events) = mpsc::channel(IN_QUEUE);
+        runtime.spawn(connection(
+            "no-such-host.invalid:7777".into(),
+            out_rx,
+            events_tx,
+        ));
+        match next_event(&mut events) {
+            Event::Failed(reason) => assert!(reason.starts_with("CANNOT FIND"), "{reason}"),
+            _ => panic!("expected the lookup to fail"),
+        }
+    }
     #[test]
     fn default_port_is_added_only_when_missing() {
         assert_eq!(Net::endpoint("play.example.com"), "play.example.com:7777");

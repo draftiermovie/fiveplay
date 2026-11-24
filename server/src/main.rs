@@ -9,10 +9,13 @@
 //!   `foundry`, modes `ffa`, `tdm`, `gun` (default `sector05:ffa,skyreach:ffa`)
 //! - `FIVEPLAY_MATCH_SECONDS`   match length (default 300)
 //! - `FIVEPLAY_MAX_PLAYERS`     1-6 (default 6)
+//! - `FIVEPLAY_THREADS`         worker threads for parallel work (default 2,
+//!   capped at the number of CPU cores)
 //!
 //! `fiveplay-server --health` probes the status port and exits 0 when the
 //! server answers (used by the container health check).
 mod game;
+mod workers;
 
 use fiveplay_net::*;
 use game::{Config, Game, parse_rotation};
@@ -115,6 +118,9 @@ fn main() -> std::process::ExitCode {
             .join(",")
     );
 
+    let threads = workers::init(env("FIVEPLAY_THREADS", workers::DEFAULT_THREADS));
+    println!("Parallel work on {threads} worker thread(s)");
+
     let mut game = Game::new(cfg);
     let start = Instant::now();
     let tick = 1. / TICK_RATE;
@@ -154,9 +160,7 @@ fn main() -> std::process::ExitCode {
             game.send_snapshots();
             next_snap = now + snap_every;
         }
-        for (addr, msg) in game.outbox.drain(..) {
-            let _ = socket.send_to(&msg.encode(), addr);
-        }
+        workers::send_all(&socket, &mut game.outbox);
         for line in game.log.drain(..) {
             println!("{line}");
         }

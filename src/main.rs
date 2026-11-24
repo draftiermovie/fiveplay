@@ -2,6 +2,7 @@
 #![cfg_attr(fiveplay_dist, windows_subsystem = "windows")]
 mod ai;
 mod audio;
+mod background;
 mod combat;
 mod controls;
 mod embedded;

@@ -2,10 +2,11 @@
 name = "fiveplay-server"
 version = "0.1.0"
 edition = "2024"
-description = "Dedicated FivePlay multiplayer server (headless, std only)"
+description = "Dedicated FivePlay multiplayer server (headless)"
 
 [dependencies]
 fiveplay-net = { path = "../net" }
+rayon = "1.12.0"
 
 [profile.release]
 opt-level = 3

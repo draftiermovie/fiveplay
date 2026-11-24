@@ -306,7 +306,15 @@ pub fn autosave(
         None => *last = Some(text),
         Some(prev) if prev == text => {}
         Some(_) => {
-            write(&text);
+            // Off the game thread, so a slow disk never costs a frame. The
+            // last save before exiting is written right away: the process
+            // may end before a background job would run.
+            if exiting {
+                write(&text);
+            } else {
+                let job = text.clone();
+                crate::background::blocking(move || write(&job));
+            }
             *last = Some(text);
         }
     }

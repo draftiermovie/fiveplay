@@ -24,3 +24,5 @@ services:
       FIVEPLAY_ROTATION: ${FIVEPLAY_ROTATION:-sector05:ffa,skyreach:tdm,foundry:gun,foundry:ffa,sector05:tdm,skyreach:gun}
       FIVEPLAY_MATCH_SECONDS: ${FIVEPLAY_MATCH_SECONDS:-300}
       FIVEPLAY_MAX_PLAYERS: ${FIVEPLAY_MAX_PLAYERS:-6}
+      # Worker threads for parallel work; capped at the CPU cores present.
+      FIVEPLAY_THREADS: ${FIVEPLAY_THREADS:-2}

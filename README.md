@@ -96,6 +96,7 @@ Server settings (Dokploy **Environment** tab or `.env`):
 | `FIVEPLAY_ROTATION` | `sector05:ffa,skyreach:tdm,foundry:gun,foundry:ffa,sector05:tdm,skyreach:gun` | Maps (`sector05`, `skyreach`, `foundry`) and modes (`ffa`, `tdm`, `gun`) played in turn |
 | `FIVEPLAY_MATCH_SECONDS` | `300` | Match length |
 | `FIVEPLAY_MAX_PLAYERS` | `6` | 1–6 |
+| `FIVEPLAY_THREADS` | `2` | Worker threads for parallel work (Rayon); never more than the CPU cores present |
 | `FIVEPLAY_PORT` | `7777` | Published UDP port on the host |
 
 Without Dokploy: `docker compose up -d --build`, or run the binary directly with `cargo run --release --manifest-path server/Cargo.toml` (it also runs on Windows).
@@ -159,7 +160,8 @@ Settings has sliders for mouse sensitivity, field of view and audio volume (drag
 - `soldier.rs`: the procedural soldier model, first-person arms, animation and colours.
 - `ui.rs`: menus, HUD, FPS counter, loadout, settings and measured loading display.
 - `audio.rs`: generated shots and menu audio.
-- `net.rs`: online play: connecting, server snapshots driving the remote avatars, standings and the local player's health, death and respawn.
+- `net.rs`: online play: connecting, server snapshots driving the remote avatars, standings and the local player's health, death and respawn. The socket lives in a task on the background runtime and talks to the game through two small bounded channels.
+- `background.rs`: one lazily started, single-threaded Tokio runtime for client I/O (server address lookup, the UDP socket, save-file writes), so the game thread never waits on the network or disk. It uses one thread with a small stack plus at most one helper for blocking work, which exits when idle.
 - `embedded.rs` + `build.rs`: compiles `assets/` into the executable.
 - `net/`: the UDP wire protocol and the rules shared with the server (weapon numbers, hit zones, spawn points).
 - `server/`: the dedicated server (match simulation in `game.rs`, sockets and status page in `main.rs`) and its Dockerfile; `docker-compose.yml` deploys it.
