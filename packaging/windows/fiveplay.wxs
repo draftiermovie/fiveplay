@@ -1,0 +1,35 @@
+<!--
+  Windows installer (WiX Toolset 5). Built by .github/workflows/build.yml:
+    wix build packaging/windows/fiveplay.wxs -arch x64 -d Version=0.1.42 -d ExePath=dist/FivePlay.exe -o dist/FivePlay.msi
+  Installs FivePlay.exe to Program Files\FivePlay with a Start menu shortcut.
+  The UpgradeCode must never change: it lets a newer MSI replace an older one.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="FivePlay"
+           Manufacturer="FivePlay"
+           Version="$(var.Version)"
+           UpgradeCode="2af34a46-2c6b-4a63-8192-e7799d11bfb0"
+           Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of FivePlay is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="FivePlay" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="Game" Directory="INSTALLFOLDER">
+      <Component>
+        <File Source="$(var.ExePath)" Name="FivePlay.exe" KeyPath="yes">
+          <Shortcut Name="FivePlay"
+                    Directory="ProgramMenuFolder"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Advertise="yes" />
+        </File>
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main">
+      <ComponentGroupRef Id="Game" />
+    </Feature>
+  </Package>
+</Wix>

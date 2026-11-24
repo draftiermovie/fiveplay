@@ -2,6 +2,19 @@
 name = "fiveplay"
 version = "0.1.0"
 edition = "2024"
+description = "Arena shooter against bots or other players online"
+
+# Debian package (cargo deb), built by .github/workflows/build.yml.
+[package.metadata.deb]
+maintainer = "FivePlay developers"
+section = "games"
+extended-description = "A fast arena shooter: Free For All, Team Deathmatch, Capture the Flag, King of the Hill, Gun Game and Kill Confirmed against bots, or online on a dedicated server. All game data is inside the program."
+depends = "$auto"
+assets = [
+    ["target/release/fiveplay", "usr/bin/fiveplay", "755"],
+    ["packaging/linux/fiveplay.desktop", "usr/share/applications/fiveplay.desktop", "644"],
+    ["packaging/icon.png", "usr/share/icons/hicolor/512x512/apps/fiveplay.png", "644"],
+]
 
 [dependencies]
 bevy = { version = "0.20.1", features = ["wav"] }

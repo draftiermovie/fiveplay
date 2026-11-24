@@ -66,7 +66,12 @@ fn main() {
     let address = connect
         .clone()
         .or_else(|| Some(saved.server.clone()).filter(|s| !s.is_empty()))
-        .or_else(|| option_env!("FIVEPLAY_DEFAULT_SERVER").map(str::to_string))
+        // CI sets this to "" when no default server is configured.
+        .or_else(|| {
+            option_env!("FIVEPLAY_DEFAULT_SERVER")
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string)
+        })
         .or_else(|| std::env::var("FIVEPLAY_SERVER").ok())
         .unwrap_or_default();
     let name = Some(saved.name.clone())
