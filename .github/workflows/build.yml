@@ -1,5 +1,6 @@
 # Builds the game for every platform on each push (and pull request), and
-# uploads the results as workflow artifacts:
+# uploads the results as workflow artifacts. Pushing a tag such as `V0.3`
+# also publishes a GitHub Release with every package attached:
 #   Windows: FivePlay.exe (single file) and FivePlay.msi (installer)
 #   Linux:   FivePlay-x86_64.AppImage and a .deb package
 #   macOS:   FivePlay-macOS.dmg (universal: Apple silicon and Intel)
@@ -10,6 +11,8 @@ name: Build
 
 on:
   push:
+    branches: ["**"]
+    tags: ["V*", "v*"]
   pull_request:
   workflow_dispatch:
 
@@ -147,3 +150,27 @@ jobs:
           name: FivePlay-macos
           path: dist/FivePlay-macOS.dmg
           if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -l dist
+          gh release create "$TAG" dist/* \
+            --repo "${{ github.repository }}" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag

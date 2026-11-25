@@ -22,6 +22,7 @@ use game::{Config, Game, parse_rotation};
 use std::{
     io::{ErrorKind, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream, UdpSocket},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -52,14 +53,19 @@ fn health(port: u16) -> std::process::ExitCode {
     }
 }
 
-/// Answers any HTTP request on the status port with the server's state.
-fn serve_status(listener: &TcpListener, game: &Game) {
-    while let Ok((mut stream, _)) = listener.accept() {
-        let _ = stream.set_nonblocking(false);
-        let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+/// Answers any HTTP request on the status port with the latest state the
+/// game loop published. Runs on its own thread so a slow or silent client
+/// can never stall the match.
+fn serve_status(listener: TcpListener, status: Arc<Mutex<String>>) {
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else {
+            continue;
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
         let mut buf = [0u8; 1024];
         let _ = stream.read(&mut buf);
-        let body = game.status_json();
+        let body = status.lock().map(|s| s.clone()).unwrap_or_default();
         let _ = write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{body}",
@@ -105,9 +111,6 @@ fn main() -> std::process::ExitCode {
             eprintln!("status page disabled, cannot bind TCP {status_port}: {err}");
             None
         });
-    if let Some(l) = &status {
-        l.set_nonblocking(true).expect("nonblocking listener");
-    }
     println!(
         "FivePlay server (protocol {VERSION}) on UDP {port}, status on TCP {status_port}, {} players max, rotation: {}",
         cfg.max_players,
@@ -122,10 +125,19 @@ fn main() -> std::process::ExitCode {
     println!("Parallel work on {threads} worker thread(s)");
 
     let mut game = Game::new(cfg);
+    let status_json = Arc::new(Mutex::new(game.status_json()));
+    if let Some(listener) = status {
+        let shared = status_json.clone();
+        std::thread::Builder::new()
+            .name("fiveplay-status".into())
+            .stack_size(64 * 1024)
+            .spawn(move || serve_status(listener, shared))
+            .expect("status thread");
+    }
     let start = Instant::now();
     let tick = 1. / TICK_RATE;
     let snap_every = 1. / SNAPSHOT_RATE;
-    let (mut next_tick, mut next_snap) = (0f32, 0f32);
+    let (mut next_tick, mut next_snap, mut next_status) = (0f32, 0f32, 0f32);
     let mut buf = [0u8; 2048];
     loop {
         loop {
@@ -164,8 +176,11 @@ fn main() -> std::process::ExitCode {
         for line in game.log.drain(..) {
             println!("{line}");
         }
-        if let Some(l) = &status {
-            serve_status(l, &game);
+        if next_status <= now {
+            if let Ok(mut s) = status_json.lock() {
+                *s = game.status_json();
+            }
+            next_status = now + 0.5;
         }
     }
 }
