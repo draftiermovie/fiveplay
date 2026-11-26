@@ -166,6 +166,7 @@ fn main() {
                 gamepad::toast,
                 vote::fade,
                 ui::standings,
+                ui::chat,
                 ui::sliders,
                 objective::visuals,
                 world::animate,
@@ -385,6 +386,9 @@ fn online_smoke_test(
     if *stage == 0 && since > 2. {
         *stage = 1;
         report("start");
+        if let Ok(text) = std::env::var("FIVEPLAY_TEST_CHAT") {
+            net.queue(fiveplay_net::ClientMsg::Chat { text });
+        }
     } else if *stage == 1 && since > 3. {
         *stage = 2;
         if std::env::var("FIVEPLAY_TEST_SHOOT").is_ok() {
@@ -415,6 +419,9 @@ fn online_smoke_test(
     } else if *stage == 2 && since > total - 2. {
         *stage = 3;
         report("end");
+        for (line, _) in &net.chat_log {
+            info!("online test chat: {line}");
+        }
         info!(
             "online test: kills {} deaths {} mode {:?} map {:?}",
             session.kills, session.deaths, session.mode, session.map

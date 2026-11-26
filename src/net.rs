@@ -44,6 +44,9 @@ const CENTRE_TO_FEET: f32 = 0.87;
 /// instead of piling up in memory.
 const OUT_QUEUE: usize = 64;
 const IN_QUEUE: usize = 32;
+/// Chat lines kept on screen, and for how long.
+const CHAT_LINES: usize = 6;
+const CHAT_TIME: f32 = 12.;
 /// Largest datagram read (snapshots are a few hundred bytes).
 const RECV_BYTES: usize = 2048;
 
@@ -78,6 +81,13 @@ pub struct Net {
     pub status: String,
     /// The server address is being typed.
     pub editing: bool,
+    /// The player name shown to others online is being typed.
+    pub editing_name: bool,
+    /// The chat line is open (in a match) and `chat_draft` is being typed.
+    pub chat_open: bool,
+    pub chat_draft: String,
+    /// Recent chat lines, newest last: (text, seconds left on screen).
+    pub chat_log: Vec<(String, f32)>,
     /// Connect as soon as the main menu is reached (`--connect`).
     pub auto_connect: bool,
     conn: Option<Conn>,
@@ -152,6 +162,7 @@ impl Net {
     pub fn connect(&mut self) {
         self.disconnect("");
         self.editing = false;
+        self.finish_name();
         let endpoint = Self::endpoint(&self.address);
         if endpoint.is_empty() {
             self.status = "ENTER A SERVER ADDRESS FIRST".into();
@@ -196,6 +207,107 @@ impl Net {
             ..default()
         };
         score::set_roster(None);
+    }
+    /// Starts or stops typing one of the two main-menu text fields; only
+    /// one is edited at a time.
+    pub fn toggle_editing(&mut self, name: bool) {
+        if name {
+            let start = !self.editing_name;
+            self.editing = false;
+            if start {
+                self.editing_name = true;
+            } else {
+                self.finish_name();
+            }
+        } else {
+            self.finish_name();
+            self.editing = !self.editing;
+        }
+    }
+    /// Adds a received chat line.
+    fn add_chat(&mut self, line: String) {
+        self.chat_log.push((line, CHAT_TIME));
+        if self.chat_log.len() > CHAT_LINES {
+            self.chat_log.remove(0);
+        }
+    }
+    /// Applies one typed key to the open chat line; Enter sends it.
+    fn chat_key(&mut self, key: &Key) {
+        match key {
+            Key::Character(text) => {
+                for c in text.chars() {
+                    if (c.is_ascii_graphic() || c == ' ') && self.chat_draft.len() < proto::CHAT_LEN
+                    {
+                        self.chat_draft.push(c);
+                    }
+                }
+            }
+            Key::Space => self.chat_key(&Key::Character(" ".into())),
+            Key::Backspace => {
+                self.chat_draft.pop();
+            }
+            Key::Enter => {
+                if let Some(text) = proto::clean_chat(&self.chat_draft) {
+                    self.queue(ClientMsg::Chat { text });
+                }
+                self.chat_open = false;
+                self.chat_draft.clear();
+            }
+            Key::Escape => {
+                self.chat_open = false;
+                self.chat_draft.clear();
+            }
+            _ => {}
+        }
+    }
+    /// Ends name entry, keeping the name in the form the server accepts.
+    fn finish_name(&mut self) {
+        self.editing_name = false;
+        self.name = proto::clean_name(&self.name);
+    }
+    /// Applies one typed key to the field being edited. Returns whether
+    /// anything changed.
+    fn type_key(&mut self, key: &Key) -> bool {
+        let name = self.editing_name;
+        match key {
+            Key::Character(text) => {
+                let mut changed = false;
+                for c in text.chars() {
+                    let ok = if name {
+                        (c.is_ascii_alphanumeric() || " -_".contains(c))
+                            && self.name.len() < proto::NAME_LEN
+                    } else {
+                        (c.is_ascii_alphanumeric() || ".:-_[]".contains(c))
+                            && self.address.len() < 96
+                    };
+                    if ok {
+                        let field = if name {
+                            &mut self.name
+                        } else {
+                            &mut self.address
+                        };
+                        field.push(if name { c.to_ascii_uppercase() } else { c });
+                        changed = true;
+                    }
+                }
+                changed
+            }
+            Key::Space if name => self.type_key(&Key::Character(" ".into())),
+            Key::Backspace => {
+                if name {
+                    self.name.pop();
+                } else {
+                    self.address.pop();
+                }
+                true
+            }
+            Key::Enter | Key::Escape => {
+                self.editing = false;
+                self.finish_name();
+                true
+            }
+            _ => false,
+        }
     }
     fn send_now(&self, msg: &ClientMsg) {
         if let Some(c) = &self.conn {
@@ -363,51 +475,72 @@ async fn connection(
     }
 }
 
-/// Text entry for the server address on the main menu: type, Backspace to
-/// delete, Enter or Escape to finish. Runs before `game::input` and consumes
-/// the keys it uses.
+/// Text entry: the server address and player name on the main menu, and
+/// the chat line in an online match (T or Enter opens it, Enter sends,
+/// Escape cancels). Runs before `game::input` and the player systems, and
+/// consumes the keys it uses; while the chat line is open no key or mouse
+/// button reaches the game.
 pub fn edit_address(
     mut net: ResMut<Net>,
     mut typed: MessageReader<KeyboardInput>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut mouse: ResMut<ButtonInput<MouseButton>>,
     mut state: ResMut<UiState>,
     session: Res<Session>,
+    settings: Res<Settings>,
 ) {
-    if !net.editing {
+    let can_chat =
+        net.link == Link::Online && matches!(session.screen, Screen::Playing | Screen::Dead);
+    if !can_chat && net.chat_open {
+        net.chat_open = false;
+        net.chat_draft.clear();
+    }
+    if net.chat_open {
+        for event in typed.read() {
+            if event.state == ButtonState::Pressed {
+                net.chat_key(&event.logical_key);
+            }
+        }
+        keys.reset_all();
+        mouse.reset_all();
+        return;
+    }
+    // T opens the chat unless a control is bound to it; Enter always does.
+    let t_free = !crate::controls::Bind::ALL
+        .iter()
+        .any(|&b| settings.bindings.get(b) == KeyCode::KeyT);
+    if can_chat
+        && (keys.just_pressed(KeyCode::Enter) || (t_free && keys.just_pressed(KeyCode::KeyT)))
+    {
+        net.chat_open = true;
+        net.chat_draft.clear();
+        // The key that opened the chat is not part of the message.
+        typed.clear();
+        keys.reset_all();
+        mouse.reset_all();
+        return;
+    }
+    if !net.editing && !net.editing_name {
         typed.clear();
         return;
     }
     if session.screen != Screen::Menu {
         net.editing = false;
+        net.finish_name();
         return;
     }
     let mut changed = false;
     for event in typed.read() {
-        if event.state != ButtonState::Pressed {
-            continue;
-        }
-        match &event.logical_key {
-            Key::Character(text) => {
-                for c in text.chars() {
-                    if (c.is_ascii_alphanumeric() || ".:-_[]".contains(c)) && net.address.len() < 96
-                    {
-                        net.address.push(c);
-                        changed = true;
-                    }
-                }
-            }
-            Key::Backspace => {
-                net.address.pop();
-                changed = true;
-            }
-            Key::Enter | Key::Escape => {
-                net.editing = false;
-                changed = true;
-            }
-            _ => {}
+        if event.state == ButtonState::Pressed {
+            changed |= net.type_key(&event.logical_key);
         }
     }
-    for key in [KeyCode::Escape, KeyCode::Enter, KeyCode::Backspace] {
+    for key in [
+        KeyCode::Escape,
+        KeyCode::Enter,
+        KeyCode::Backspace,
+        KeyCode::Space,
+    ] {
         keys.clear_just_pressed(key);
     }
     if changed {
@@ -555,8 +688,20 @@ pub fn update(
                 }
                 board.announce(line);
             }
+            ServerMsg::Chat { from, text } => {
+                let who = if from == net.my_id {
+                    net.name.clone()
+                } else {
+                    net.local_id(from).map_or("?".into(), score::name)
+                };
+                net.add_chat(format!("{who}: {text}"));
+            }
         }
     }
+    for line in &mut net.chat_log {
+        line.1 -= dt;
+    }
+    net.chat_log.retain(|l| l.1 > 0.);
 
     // Give up on silent servers.
     let silent = net.clock - net.last_recv;
@@ -875,6 +1020,75 @@ mod tests {
             Event::Failed(reason) => assert!(reason.starts_with("CANNOT FIND"), "{reason}"),
             _ => panic!("expected the lookup to fail"),
         }
+    }
+    #[test]
+    fn name_entry_is_cleaned_and_exclusive_with_the_address() {
+        let mut net = Net::new("x".into(), "me".into());
+        net.toggle_editing(false);
+        net.toggle_editing(true);
+        assert!(net.editing_name && !net.editing);
+        for _ in 0..3 {
+            net.type_key(&Key::Backspace);
+        }
+        for key in ["a", "c", "e", "!", "<"] {
+            net.type_key(&Key::Character(key.into()));
+        }
+        net.type_key(&Key::Space);
+        net.type_key(&Key::Character("7-x_".into()));
+        assert_eq!(net.name, "ACE 7-X_");
+        for _ in 0..20 {
+            net.type_key(&Key::Character("z".into()));
+        }
+        assert_eq!(net.name.len(), proto::NAME_LEN);
+        net.type_key(&Key::Enter);
+        assert!(!net.editing_name);
+        // Emptied and finished: the server's default name.
+        net.toggle_editing(true);
+        for _ in 0..20 {
+            net.type_key(&Key::Backspace);
+        }
+        net.toggle_editing(true);
+        assert_eq!(net.name, "PLAYER");
+        // A trailing space is trimmed when entry ends.
+        net.toggle_editing(true);
+        net.type_key(&Key::Space);
+        net.type_key(&Key::Escape);
+        assert_eq!(net.name, "PLAYER");
+    }
+    #[test]
+    fn chat_line_sends_cleaned_text_and_keeps_a_short_log() {
+        let mut net = Net::new("x".into(), "me".into());
+        net.link = Link::Online;
+        net.chat_open = true;
+        for key in ["g", "g", "\u{e9}"] {
+            net.chat_key(&Key::Character(key.into()));
+        }
+        net.chat_key(&Key::Space);
+        net.chat_key(&Key::Character("all".into()));
+        net.chat_key(&Key::Backspace);
+        assert_eq!(net.chat_draft, "gg al");
+        net.chat_key(&Key::Enter);
+        assert!(!net.chat_open && net.chat_draft.is_empty());
+        assert_eq!(
+            net.outbox,
+            [ClientMsg::Chat {
+                text: "gg al".into()
+            }]
+        );
+        // Blank or cancelled lines send nothing.
+        net.outbox.clear();
+        net.chat_open = true;
+        net.chat_key(&Key::Space);
+        net.chat_key(&Key::Enter);
+        net.chat_open = true;
+        net.chat_key(&Key::Character("oops".into()));
+        net.chat_key(&Key::Escape);
+        assert!(net.outbox.is_empty() && !net.chat_open);
+        for i in 0..10 {
+            net.add_chat(format!("line {i}"));
+        }
+        assert_eq!(net.chat_log.len(), CHAT_LINES);
+        assert_eq!(net.chat_log.last().unwrap().0, "line 9");
     }
     #[test]
     fn default_port_is_added_only_when_missing() {

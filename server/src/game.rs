@@ -82,6 +82,8 @@ pub struct Player {
     pub died_at: f32,
     /// Hit allowance per weapon (token bucket), refilled at the fire rate.
     pub ammo: [f32; 5],
+    /// Chat allowance (token bucket), so nobody can flood the chat.
+    pub chat: f32,
 }
 
 pub struct Game {
@@ -227,7 +229,32 @@ impl Game {
                 }
             }
             ClientMsg::Bye => self.leave(id, "left"),
+            ClientMsg::Chat { text } => self.chat(id, &text),
         }
+    }
+
+    /// Relays a cleaned chat message to everyone, within the sender's
+    /// allowance; anything beyond it is dropped.
+    fn chat(&mut self, id: usize, text: &str) {
+        let Some(text) = clean_chat(text) else {
+            return;
+        };
+        let Some(p) = self.players[id].as_mut() else {
+            return;
+        };
+        if p.chat < 1. {
+            return;
+        }
+        p.chat -= 1.;
+        let name = p.name.clone();
+        self.log.push(format!("{name}: {text}"));
+        self.broadcast(
+            ServerMsg::Chat {
+                from: id as u8,
+                text,
+            },
+            None,
+        );
     }
 
     fn join(&mut self, addr: SocketAddr, name: &str) {
@@ -272,6 +299,7 @@ impl Game {
             hurt_time: 99.,
             died_at: -99.,
             ammo: [0.; 5],
+            chat: CHAT_BURST,
         });
         self.spawn(id);
         self.send(addr, ServerMsg::Welcome { id: id as u8 });
@@ -461,6 +489,7 @@ impl Game {
                 let refill = rule.pellets as f32 / rule.interval * dt;
                 p.ammo[w] = (p.ammo[w] + refill).min(bucket(rule));
             }
+            p.chat = (p.chat + dt / CHAT_REFILL).min(CHAT_BURST);
             p.hurt_time += dt;
             if p.alive && p.hurt_time > 5. {
                 p.health = (p.health + 8. * dt).min(100.);
@@ -573,6 +602,60 @@ mod tests {
         })
     }
 
+    #[test]
+    fn chat_is_relayed_cleaned_and_rate_limited() {
+        let mut g = game(MODE_FFA);
+        let a = hello(&mut g, 1, "a");
+        hello(&mut g, 2, "b");
+        g.outbox.clear();
+        g.handle(
+            addr(1),
+            ClientMsg::Chat {
+                text: " gg\n".into(),
+            },
+        );
+        let chats: Vec<_> = g
+            .outbox
+            .iter()
+            .filter(|(_, m)| matches!(m, ServerMsg::Chat { .. }))
+            .collect();
+        assert_eq!(chats.len(), 2, "everyone, the sender included");
+        assert_eq!(
+            chats[0].1,
+            ServerMsg::Chat {
+                from: a as u8,
+                text: "gg".into()
+            }
+        );
+        // Blank messages are dropped; a flood stops at the burst size.
+        g.outbox.clear();
+        g.handle(addr(1), ClientMsg::Chat { text: "   ".into() });
+        assert!(g.outbox.is_empty());
+        for _ in 0..20 {
+            g.handle(
+                addr(1),
+                ClientMsg::Chat {
+                    text: "spam".into(),
+                },
+            );
+        }
+        assert_eq!(g.outbox.len(), 2 * (CHAT_BURST as usize - 1));
+        // The allowance comes back over time.
+        g.outbox.clear();
+        g.step(CHAT_REFILL + 0.01);
+        g.outbox.clear();
+        g.handle(
+            addr(1),
+            ClientMsg::Chat {
+                text: "again".into(),
+            },
+        );
+        assert_eq!(g.outbox.len(), 2);
+        // Strangers cannot chat.
+        g.outbox.clear();
+        g.handle(addr(9), ClientMsg::Chat { text: "hi".into() });
+        assert!(g.outbox.is_empty());
+    }
     #[test]
     fn join_welcome_full_and_resend() {
         let mut g = game(MODE_FFA);

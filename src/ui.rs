@@ -83,6 +83,8 @@ pub enum Action {
     Online,
     /// Start or finish typing the server address.
     EditServer,
+    /// Start or finish typing the name other players see online.
+    EditName,
 }
 #[derive(Resource)]
 pub struct UiState(pub Screen);
@@ -97,7 +99,7 @@ const DANGER: Color = Color::srgb(1., 0.32, 0.24);
 fn help(settings: &Settings) -> String {
     let b = &settings.bindings;
     format!(
-        "{}{}{}{} MOVE   /   {} SPRINT   /   {} SLIDE   /   {} JUMP\nLMB FIRE   /   RMB AIM   /   {} RELOAD   /   1-5 WEAPONS   /   {} SCORES   /   ESC PAUSE",
+        "{}{}{}{} MOVE   /   {} SPRINT   /   {} SLIDE   /   {} JUMP\nLMB FIRE   /   RMB AIM   /   {} RELOAD   /   1-5 WEAPONS   /   {} SCORES   /   T CHAT (ONLINE)   /   ESC PAUSE",
         b.name(Bind::Forward),
         b.name(Bind::Left),
         b.name(Bind::Back),
@@ -542,6 +544,13 @@ fn menu_screen(
                         &format!("SERVER / {address}{cursor}"),
                         Action::EditServer,
                     );
+                    let cursor = if net.editing_name { "_" } else { "" };
+                    button(
+                        p,
+                        ui,
+                        &format!("NAME / {}{cursor}", net.name),
+                        Action::EditName,
+                    );
                     label(p, "", 13., SKY, 12);
                     let mode = session.mode.name();
                     button(p, ui, &format!("MODE / {mode}"), Action::Mode);
@@ -793,6 +802,63 @@ fn menu_screen(
     });
     label(root, &help(settings), 12., MUTED, 10);
 }
+/// Online chat, bottom left above the controls help.
+#[derive(Component)]
+pub struct ChatBox;
+fn chat_box(root: &mut ChildSpawnerCommands) {
+    root.spawn(Node {
+        position_type: PositionType::Absolute,
+        left: px(24),
+        bottom: px(120),
+        max_width: px(560),
+        flex_direction: FlexDirection::Column,
+        ..default()
+    })
+    .with_children(|p| {
+        p.spawn((
+            ChatBox,
+            Text::new(""),
+            TextFont {
+                font_size: 15.0.into(),
+                ..default()
+            },
+            TextColor(Color::WHITE),
+            TextShadow {
+                offset: Vec2::splat(1.5),
+                color: Color::srgba(0., 0., 0., 0.85),
+            },
+        ));
+    });
+}
+/// Writes the chat lines and, while typing, the message being written.
+pub fn chat(
+    net: Res<crate::net::Net>,
+    time: Res<Time>,
+    mut boxes: Query<(&mut Text, &mut TextColor), With<ChatBox>>,
+) {
+    let mut lines: Vec<String> = net.chat_log.iter().map(|(l, _)| l.clone()).collect();
+    if net.chat_open {
+        let cursor = if time.elapsed_secs().fract() < 0.5 {
+            "_"
+        } else {
+            " "
+        };
+        lines.push(format!(
+            "SAY:  {}{cursor}   (ENTER SEND / ESC CANCEL)",
+            net.chat_draft
+        ));
+    }
+    let value = lines.join("\n");
+    for (mut text, mut color) in &mut boxes {
+        if text.0 != value {
+            text.0 = value.clone();
+        }
+        let target = if net.chat_open { SKY } else { Color::WHITE };
+        if color.0 != target {
+            color.0 = target;
+        }
+    }
+}
 /// The kill feed, top right below the FPS counter.
 fn kill_feed(root: &mut ChildSpawnerCommands) {
     root.spawn(Node {
@@ -881,6 +947,7 @@ fn death_hud(root: &mut ChildSpawnerCommands, ui: &UiAssets, title: &str) {
             });
     });
     kill_feed(root);
+    chat_box(root);
     score_overlay(root, ui);
     root.spawn(Node {
         width: percent(100),
@@ -961,6 +1028,7 @@ fn hud(
         label(p, "", 17., DANGER, 6);
     });
     kill_feed(root);
+    chat_box(root);
     score_overlay(root, ui);
     root.spawn(Node {
         position_type: PositionType::Absolute,
@@ -1422,7 +1490,11 @@ pub fn interact(
                 state.0 = Screen::Loading;
             }
             Action::EditServer => {
-                net.editing = !net.editing;
+                net.toggle_editing(false);
+                state.0 = Screen::Loading;
+            }
+            Action::EditName => {
+                net.toggle_editing(true);
                 state.0 = Screen::Loading;
             }
             Action::Weapon(i) => {

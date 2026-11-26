@@ -11,7 +11,7 @@
 //! (alive, enemies, range, fire rate) before applying damage.
 
 pub const MAGIC: [u8; 2] = *b"FP";
-pub const VERSION: u8 = 2;
+pub const VERSION: u8 = 3;
 pub const DEFAULT_PORT: u16 = 7777;
 /// Players per server. The client shows remote players with its six bot
 /// avatars, so this is one local player plus six others at most.
@@ -132,6 +132,26 @@ pub fn clean_name(name: &str) -> String {
     }
 }
 
+/// Longest chat message kept.
+pub const CHAT_LEN: usize = 80;
+/// Chat messages a player may send in a burst, and how many seconds it
+/// takes to earn one more.
+pub const CHAT_BURST: f32 = 4.;
+pub const CHAT_REFILL: f32 = 1.5;
+
+/// Keeps a chat message printable ASCII, single line and short; `None` when
+/// nothing is left.
+pub fn clean_chat(text: &str) -> Option<String> {
+    let cleaned: String = text
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .filter(|c| c.is_ascii_graphic() || *c == ' ')
+        .take(CHAT_LEN)
+        .collect();
+    let cleaned = cleaned.trim();
+    (!cleaned.is_empty()).then(|| cleaned.to_string())
+}
+
 pub type V3 = [f32; 3];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -164,6 +184,10 @@ pub enum ClientMsg {
     /// Fell out of the world.
     Fall,
     Bye,
+    /// A chat message for everyone on the server.
+    Chat {
+        text: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -184,6 +208,11 @@ pub enum ServerMsg {
         killer: u8,
         victim: u8,
         headshot: bool,
+    },
+    /// A chat message, relayed to everyone (the sender included).
+    Chat {
+        from: u8,
+        text: String,
     },
 }
 
@@ -345,6 +374,11 @@ impl ClientMsg {
             ClientMsg::Respawn => Writer::new(5),
             ClientMsg::Fall => Writer::new(6),
             ClientMsg::Bye => Writer::new(7),
+            ClientMsg::Chat { text } => {
+                let mut w = Writer::new(8);
+                w.str(text);
+                w
+            }
         };
         w.0
     }
@@ -372,6 +406,7 @@ impl ClientMsg {
             5 => ClientMsg::Respawn,
             6 => ClientMsg::Fall,
             7 => ClientMsg::Bye,
+            8 => ClientMsg::Chat { text: r.str()? },
             _ => return None,
         })
     }
@@ -437,6 +472,12 @@ impl ServerMsg {
                 w.u8(*headshot as u8);
                 w
             }
+            ServerMsg::Chat { from, text } => {
+                let mut w = Writer::new(6);
+                w.u8(*from);
+                w.str(text);
+                w
+            }
         };
         w.0
     }
@@ -490,6 +531,10 @@ impl ServerMsg {
                 victim: r.u8()?,
                 headshot: r.u8()? != 0,
             },
+            6 => ServerMsg::Chat {
+                from: r.u8()?,
+                text: r.str()?,
+            },
             _ => return None,
         })
     }
@@ -522,6 +567,9 @@ mod tests {
             ClientMsg::Respawn,
             ClientMsg::Fall,
             ClientMsg::Bye,
+            ClientMsg::Chat {
+                text: "gg all".into(),
+            },
         ];
         for m in msgs {
             assert_eq!(ClientMsg::decode(&m.encode()), Some(m));
@@ -570,6 +618,10 @@ mod tests {
                 victim: 0,
                 headshot: true,
             },
+            ServerMsg::Chat {
+                from: 2,
+                text: "nice shot".into(),
+            },
         ];
         for m in msgs {
             assert_eq!(ServerMsg::decode(&m.encode()), Some(m));
@@ -602,6 +654,13 @@ mod tests {
         assert_eq!(clean_name("  ben<script>  "), "BENSCRIPT");
         assert_eq!(clean_name(""), "PLAYER");
         assert_eq!(clean_name("abcdefghijklmnopqrstuvwxyz").len(), NAME_LEN);
+    }
+    #[test]
+    fn chat_is_cleaned() {
+        assert_eq!(clean_chat("  hi\tthere\n "), Some("hi there".into()));
+        assert_eq!(clean_chat("caf\u{e9} \u{1F600}!"), Some("caf !".into()));
+        assert_eq!(clean_chat(" \n\u{7}"), None);
+        assert_eq!(clean_chat(&"x".repeat(500)).unwrap().len(), CHAT_LEN);
     }
     #[test]
     fn gun_game_ladder() {
