@@ -44,6 +44,11 @@ pub struct Vote {
     /// Black overlay opacity for the transition (0..1).
     pub fade: f32,
     seed: u64,
+    /// Run by an online server (see `sync_online`): no bots, no fade; the
+    /// server's next match starts through `net`.
+    pub online: bool,
+    /// How many can vote (everyone in the match).
+    pub voters: usize,
 }
 
 impl Vote {
@@ -62,6 +67,7 @@ impl Vote {
     pub fn begin(&mut self, seed: u64) {
         *self = Self {
             seed: seed | 1,
+            voters: COMBATANTS,
             ..default()
         };
         let mut modes = Mode::ALL;
@@ -85,6 +91,49 @@ impl Vote {
         }
         self.phase = Phase::Voting;
         self.timer = VOTE_TIME;
+    }
+    /// Mirrors the server's vote: its options, everyone's votes (by
+    /// combatant id), the time left and, once decided, the winner. Returns
+    /// whether anything the vote cards show changed.
+    pub fn sync_online(
+        &mut self,
+        options: [(Map, Mode); 3],
+        votes: [Option<usize>; COMBATANTS],
+        winner: Option<usize>,
+        remaining: f32,
+        voters: usize,
+    ) -> bool {
+        // Until the server has our vote, keep showing the one just cast.
+        let mut votes = votes;
+        if votes[PLAYER].is_none() && winner.is_none() && self.online {
+            votes[PLAYER] = self.votes[PLAYER];
+        }
+        let phase = if winner.is_some() {
+            Phase::Reveal
+        } else {
+            Phase::Voting
+        };
+        let changed = !self.online
+            || self.options != options
+            || self.votes != votes
+            || self.phase != phase
+            || self.voters != voters;
+        self.online = true;
+        self.options = options;
+        self.votes = votes;
+        self.phase = phase;
+        self.winner = winner.unwrap_or(0);
+        self.timer = remaining;
+        self.voters = voters;
+        self.fade = 0.;
+        changed
+    }
+    /// Leaves an online vote (the next match started, or the connection
+    /// ended).
+    pub fn end_online(&mut self) {
+        if self.online {
+            *self = Self::default();
+        }
     }
     /// The player may change their mind until the votes are revealed.
     pub fn cast(&mut self, voter: usize, option: usize) {
@@ -124,7 +173,7 @@ impl Vote {
                     "{:.0}     /     {} OF {} VOTED     /     {how}",
                     self.timer.ceil().max(0.),
                     self.count(),
-                    COMBATANTS
+                    self.voters
                 )
             }
             _ => {
@@ -145,8 +194,26 @@ pub fn update(
     mut state: ResMut<crate::ui::UiState>,
     loaded: Res<LoadedMap>,
     nav: Res<NavGrid>,
+    mut net: ResMut<crate::net::Net>,
 ) {
     let dt = time.delta_secs().min(0.1);
+    // Online the server runs the vote; only the player's own vote is sent.
+    if vote.online {
+        if vote.phase == Phase::Voting && session.screen == Screen::Vote {
+            vote.timer = (vote.timer - dt).max(0.);
+            for (i, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3]
+                .into_iter()
+                .enumerate()
+            {
+                if keys.just_pressed(key) {
+                    vote.cast(PLAYER, i);
+                    net.queue(fiveplay_net::ClientMsg::Vote { option: i as u8 });
+                    state.0 = Screen::Loading;
+                }
+            }
+        }
+        return;
+    }
     // Leaving the vote screen (Escape) before the match starts cancels it.
     if matches!(
         vote.phase,
@@ -308,6 +375,36 @@ mod tests {
         for mode in Mode::ALL {
             assert!(seen.contains(&mode), "{mode:?} never offered");
         }
+    }
+    #[test]
+    fn online_vote_follows_the_server() {
+        let mut v = Vote::default();
+        let options = [
+            (Map::Foundry, Mode::GunGame),
+            (Map::Sector05, Mode::FreeForAll),
+            (Map::Skyreach, Mode::TeamDeathmatch),
+        ];
+        let mut votes = [None; COMBATANTS];
+        assert!(v.sync_online(options, votes, None, 9., 3));
+        assert_eq!(v.phase, Phase::Voting);
+        assert!(
+            !v.sync_online(options, votes, None, 8.5, 3),
+            "only the clock moved"
+        );
+        // A vote just cast survives until the server echoes it.
+        v.cast(PLAYER, 1);
+        assert!(!v.sync_online(options, votes, None, 8., 3));
+        assert_eq!(v.votes[PLAYER], Some(1));
+        votes[2] = Some(0);
+        assert!(v.sync_online(options, votes, None, 7., 3));
+        assert!(
+            v.status(&crate::gamepad::Pad::default())
+                .contains("2 OF 3 VOTED")
+        );
+        assert!(v.sync_online(options, votes, Some(0), 3., 3));
+        assert!(v.revealed() && v.winning() == options[0]);
+        v.end_online();
+        assert!(!v.online && v.phase == Phase::Idle);
     }
     #[test]
     fn majority_wins_and_votes_lock_after_reveal() {

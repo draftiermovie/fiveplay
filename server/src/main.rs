@@ -6,8 +6,11 @@
 //!   check (default 8080, `0` disables it)
 //! - `FIVEPLAY_ROTATION`        maps and modes played in turn, e.g.
 //!   `sector05:ffa,skyreach:tdm,foundry:gun`; maps `sector05`, `skyreach`,
-//!   `foundry`, modes `ffa`, `tdm`, `gun` (default `sector05:ffa,skyreach:ffa`)
+//!   `foundry`, modes `ffa`, `tdm`, `gun` (default `sector05:ffa,skyreach:ffa`);
+//!   with voting on, only the first match comes from the rotation
 //! - `FIVEPLAY_MATCH_SECONDS`   match length (default 300)
+//! - `FIVEPLAY_VOTE`            `1` (default): players vote on the next map
+//!   and mode after each match; `0`: play the rotation in order
 //! - `FIVEPLAY_MAX_PLAYERS`     1-6 (default 6)
 //! - `FIVEPLAY_THREADS`         worker threads for parallel work (default 2,
 //!   capped at the number of CPU cores)
@@ -92,6 +95,7 @@ fn main() -> std::process::ExitCode {
         rotation,
         match_seconds: env("FIVEPLAY_MATCH_SECONDS", 300f32).clamp(30., 3600.),
         max_players: env("FIVEPLAY_MAX_PLAYERS", MAX_PLAYERS).clamp(1, MAX_PLAYERS),
+        vote: env("FIVEPLAY_VOTE", 1u8) != 0,
         ..Default::default()
     };
     let socket = match UdpSocket::bind(("0.0.0.0", port)) {
@@ -112,8 +116,9 @@ fn main() -> std::process::ExitCode {
             None
         });
     println!(
-        "FivePlay server (protocol {VERSION}) on UDP {port}, status on TCP {status_port}, {} players max, rotation: {}",
+        "FivePlay server (protocol {VERSION}) on UDP {port}, status on TCP {status_port}, {} players max, map vote {}, rotation: {}",
         cfg.max_players,
+        if cfg.vote { "on" } else { "off" },
         cfg.rotation
             .iter()
             .map(|(map, mode)| format!("{}:{}", game::map_name(*map), game::mode_name(*mode)))

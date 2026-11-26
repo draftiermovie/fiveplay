@@ -108,6 +108,8 @@ pub struct Net {
     outbox: Vec<ClientMsg>,
     /// A match has been joined on this connection.
     in_match: bool,
+    /// This match's vote screen has been opened.
+    vote_shown: bool,
     launch_pending: bool,
     results_counted: bool,
     seen: (u16, u16),
@@ -158,6 +160,22 @@ impl Net {
         } else {
             format!("{a}:{}", proto::DEFAULT_PORT)
         }
+    }
+    /// A server address as copied from anywhere: the first line, without a
+    /// `udp://`-style scheme, a trailing path or surrounding spaces, and only
+    /// the characters an address can contain.
+    pub fn clean_pasted_address(text: &str) -> String {
+        let line = text
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("");
+        let line = line.split_once("://").map_or(line, |(_, rest)| rest);
+        let line = line.split('/').next().unwrap_or("");
+        line.chars()
+            .filter(|c| c.is_ascii_alphanumeric() || ".:-_[]".contains(*c))
+            .take(96)
+            .collect()
     }
     pub fn connect(&mut self) {
         self.disconnect("");
@@ -488,7 +506,40 @@ pub fn edit_address(
     mut state: ResMut<UiState>,
     session: Res<Session>,
     settings: Res<Settings>,
+    clipboard: Option<ResMut<bevy::clipboard::Clipboard>>,
+    mut modifier: Local<bool>,
 ) {
+    // Ctrl+V (Cmd+V on macOS) or a Paste key: the clipboard's text, typed
+    // into whichever field is being edited. The modifier is tracked from the
+    // raw key events because the chat line clears the game's key state.
+    let mut events = Vec::new();
+    let mut paste_key = false;
+    for e in typed.read() {
+        let down = e.state == ButtonState::Pressed;
+        if matches!(
+            e.key_code,
+            KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::SuperLeft | KeyCode::SuperRight
+        ) {
+            *modifier = down;
+            continue;
+        }
+        if !down {
+            continue;
+        }
+        if e.logical_key == Key::Paste || (*modifier && e.key_code == KeyCode::KeyV) {
+            paste_key = true;
+        } else if !(*modifier && matches!(e.logical_key, Key::Character(_))) {
+            // Typed text, without the letter of other Ctrl/Cmd shortcuts.
+            events.push(e.logical_key.clone());
+        }
+    }
+    let mut pasted = None;
+    if paste_key
+        && let Some(mut clipboard) = clipboard
+        && let Some(Ok(text)) = clipboard.fetch_text().poll_result()
+    {
+        pasted = Some(text);
+    }
     let can_chat =
         net.link == Link::Online && matches!(session.screen, Screen::Playing | Screen::Dead);
     if !can_chat && net.chat_open {
@@ -496,10 +547,12 @@ pub fn edit_address(
         net.chat_draft.clear();
     }
     if net.chat_open {
-        for event in typed.read() {
-            if event.state == ButtonState::Pressed {
-                net.chat_key(&event.logical_key);
-            }
+        if let Some(text) = &pasted {
+            let line = text.lines().next().unwrap_or_default();
+            net.chat_key(&Key::Character(line.into()));
+        }
+        for key in &events {
+            net.chat_key(key);
         }
         keys.reset_all();
         mouse.reset_all();
@@ -515,13 +568,29 @@ pub fn edit_address(
         net.chat_open = true;
         net.chat_draft.clear();
         // The key that opened the chat is not part of the message.
-        typed.clear();
         keys.reset_all();
         mouse.reset_all();
         return;
     }
+    // Pasting on the main menu outside the name field replaces the server
+    // address.
+    let mut changed = false;
+    if let Some(text) = &pasted
+        && session.screen == Screen::Menu
+        && !net.editing_name
+    {
+        if !net.editing {
+            net.toggle_editing(false);
+        }
+        net.address = Net::clean_pasted_address(text);
+        changed = true;
+        pasted = None;
+        events.clear();
+    }
     if !net.editing && !net.editing_name {
-        typed.clear();
+        if changed {
+            state.0 = Screen::Loading;
+        }
         return;
     }
     if session.screen != Screen::Menu {
@@ -529,11 +598,11 @@ pub fn edit_address(
         net.finish_name();
         return;
     }
-    let mut changed = false;
-    for event in typed.read() {
-        if event.state == ButtonState::Pressed {
-            changed |= net.type_key(&event.logical_key);
-        }
+    if let Some(text) = &pasted {
+        changed |= net.type_key(&Key::Character(text.trim().into()));
+    }
+    for key in &events {
+        changed |= net.type_key(key);
     }
     for key in [
         KeyCode::Escape,
@@ -577,6 +646,28 @@ type Match<'w> = (
     ResMut<'w, Actions>,
 );
 
+fn map_of(id: u8) -> Map {
+    match id {
+        proto::MAP_SKYREACH => Map::Skyreach,
+        proto::MAP_FOUNDRY => Map::Foundry,
+        _ => Map::Sector05,
+    }
+}
+fn mode_of(id: u8) -> Mode {
+    match id {
+        proto::MODE_TDM => Mode::TeamDeathmatch,
+        proto::MODE_GUN => Mode::GunGame,
+        _ => Mode::FreeForAll,
+    }
+}
+type Extras<'w> = (
+    Res<'w, Palette>,
+    ResMut<'w, Assets<Mesh>>,
+    ResMut<'w, crate::supply::Supplies>,
+    ResMut<'w, crate::vote::Vote>,
+    ResMut<'w, UiState>,
+);
+
 /// Receives server traffic, applies it, and sends this frame's state.
 pub fn update(
     mut commands: Commands,
@@ -587,7 +678,7 @@ pub fn update(
     loaded: Res<LoadedMap>,
     (mut bots, mut player, spatial): World3d,
     (mut board, mut career, mut spectate, mut arsenal, mut actions): Match,
-    (palette, mut meshes): (Res<Palette>, ResMut<Assets<Mesh>>),
+    (palette, mut meshes, mut supplies, mut vote, mut state): Extras,
 ) {
     let dt = time.delta_secs();
     net.clock += dt;
@@ -688,6 +779,17 @@ pub fn update(
                 }
                 board.announce(line);
             }
+            ServerMsg::Pickup { player: who, index } => {
+                let index = index as usize;
+                if index < proto::SUPPLY_COUNT {
+                    supplies.timers[index] = proto::SUPPLY_RESPAWN;
+                    if who == net.my_id {
+                        let (p, _) = &mut *player;
+                        crate::supply::collect(index, true, p, &mut arsenal, &mut session);
+                        crate::audio::play(&mut commands, &settings, 0.7, |b| b.land.clone());
+                    }
+                }
+            }
             ServerMsg::Chat { from, text } => {
                 let who = if from == net.my_id {
                     net.name.clone()
@@ -739,16 +841,10 @@ pub fn update(
             net.results_counted = false;
             net.seen = (0, 0);
             net.slots = [None; SLOTS];
-            session.mode = match snap.mode {
-                proto::MODE_TDM => Mode::TeamDeathmatch,
-                proto::MODE_GUN => Mode::GunGame,
-                _ => Mode::FreeForAll,
-            };
-            session.map = match snap.map {
-                proto::MAP_SKYREACH => Map::Skyreach,
-                proto::MAP_FOUNDRY => Map::Foundry,
-                _ => Map::Sector05,
-            };
+            net.vote_shown = false;
+            vote.end_online();
+            session.mode = mode_of(snap.mode);
+            session.map = map_of(snap.map);
         }
         if net.link == Link::Joining && loaded.0 == Some(session.map) {
             actions.0.push(Action::Launch);
@@ -771,6 +867,29 @@ pub fn update(
                 &mut player,
                 &spatial,
             );
+            supplies.set_available(snap.supplies);
+            if snap.phase == proto::PHASE_VOTE {
+                let options = snap
+                    .vote_options
+                    .map(|(map, mode)| (map_of(map), mode_of(mode)));
+                let mut votes = [None; COMBATANTS];
+                for p in &snap.players {
+                    if let Some(id) = net.local_id(p.id) {
+                        votes[id] = (p.vote < 3).then_some(p.vote as usize);
+                    }
+                }
+                let winner = (snap.vote_winner < 3).then_some(snap.vote_winner as usize);
+                let mut changed =
+                    vote.sync_online(options, votes, winner, snap.remaining, snap.players.len());
+                if !net.vote_shown {
+                    net.vote_shown = true;
+                    session.screen = Screen::Vote;
+                    changed = true;
+                }
+                if changed && session.screen == Screen::Vote {
+                    state.0 = Screen::Loading;
+                }
+            }
         }
     }
 
@@ -1089,6 +1208,25 @@ mod tests {
         }
         assert_eq!(net.chat_log.len(), CHAT_LINES);
         assert_eq!(net.chat_log.last().unwrap().0, "line 9");
+    }
+    #[test]
+    fn pasted_addresses_are_cleaned() {
+        assert_eq!(
+            Net::clean_pasted_address("  203.0.113.7:7777\n"),
+            "203.0.113.7:7777"
+        );
+        assert_eq!(
+            Net::clean_pasted_address("\nhttps://play.example.com/status\nmore"),
+            "play.example.com"
+        );
+        assert_eq!(Net::clean_pasted_address("[::1]:7000"), "[::1]:7000");
+        assert_eq!(Net::clean_pasted_address("my server!"), "myserver");
+        // Pasted into the name field, only name characters stay.
+        let mut net = Net::new("x".into(), "me".into());
+        net.toggle_editing(true);
+        net.type_key(&Key::Character(" ace\t9!".into()));
+        net.type_key(&Key::Enter);
+        assert_eq!(net.name, "ME ACE9");
     }
     #[test]
     fn default_port_is_added_only_when_missing() {

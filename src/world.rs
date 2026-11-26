@@ -729,6 +729,11 @@ mod tests {
         points.push(base(score::RED));
         // The navigation probe needs open floor here on every map.
         points.push(Vec3::new(20., 0., 25.));
+        // Supply boxes stand on open floor.
+        for i in 0..fiveplay_net::SUPPLY_COUNT {
+            let [x, z] = fiveplay_net::supply_spot(fiveplay_net::MAP_FOUNDRY, i);
+            points.push(Vec3::new(x, 0., z));
+        }
         let blocks = foundry_blocks();
         for (pos, size, paint) in &blocks {
             let top = pos.y + size.y * 0.5;

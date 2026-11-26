@@ -11,14 +11,18 @@ pub struct Config {
     pub match_seconds: f32,
     pub results_seconds: f32,
     pub max_players: usize,
+    /// Players vote on the next map and mode after each match; otherwise
+    /// the rotation is played in order.
+    pub vote: bool,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
             rotation: vec![(MAP_SECTOR05, MODE_FFA)],
             match_seconds: 300.,
-            results_seconds: 12.,
+            results_seconds: 10.,
             max_players: MAX_PLAYERS,
+            vote: true,
         }
     }
 }
@@ -84,6 +88,8 @@ pub struct Player {
     pub ammo: [f32; 5],
     /// Chat allowance (token bucket), so nobody can flood the chat.
     pub chat: f32,
+    /// Option chosen in the map vote, or `NONE`.
+    pub vote: u8,
 }
 
 pub struct Game {
@@ -97,6 +103,14 @@ pub struct Game {
     pub remaining: f32,
     pub team_score: [u16; 2],
     spawn_turn: usize,
+    /// The map and mode the vote picked for this match (overrides the
+    /// rotation).
+    pub playing: Option<(u8, u8)>,
+    pub vote_options: [(u8, u8); 3],
+    pub vote_winner: u8,
+    /// Seconds until each supply box is back (0 = available).
+    pub supplies: [f32; SUPPLY_COUNT],
+    seed: u64,
     /// Datagrams waiting to be sent.
     pub outbox: Vec<(SocketAddr, ServerMsg)>,
     /// Human-readable log lines.
@@ -125,11 +139,19 @@ impl Game {
             remaining,
             team_score: [0; 2],
             spawn_turn: 0,
+            playing: None,
+            vote_options: [(MAP_SECTOR05, MODE_FFA); 3],
+            vote_winner: NONE,
+            supplies: [0.; SUPPLY_COUNT],
+            seed: 0x9e37_79b9_7f4a_7c15,
             outbox: Vec::new(),
             log: Vec::new(),
         }
     }
     pub fn current(&self) -> (u8, u8) {
+        if let Some(choice) = self.playing {
+            return choice;
+        }
         let r = &self.cfg.rotation;
         r[self.rotation_index % r.len().max(1)]
     }
@@ -230,6 +252,8 @@ impl Game {
             }
             ClientMsg::Bye => self.leave(id, "left"),
             ClientMsg::Chat { text } => self.chat(id, &text),
+            ClientMsg::Vote { option } => self.vote(id, option),
+            ClientMsg::Pickup { index } => self.pickup(id, index as usize),
         }
     }
 
@@ -255,6 +279,87 @@ impl Game {
             },
             None,
         );
+    }
+
+    /// Records a vote while voting is open; the vote closes early once
+    /// everyone has voted.
+    fn vote(&mut self, id: usize, option: u8) {
+        if self.phase != PHASE_VOTE || self.vote_winner != NONE || option > 2 {
+            return;
+        }
+        if let Some(p) = self.players[id].as_mut() {
+            p.vote = option;
+        }
+        if self.players.iter().flatten().all(|p| p.vote != NONE) {
+            self.remaining = 0.;
+        }
+    }
+    /// Gives supply box `index` to player `id` if it is available and the
+    /// player is (nearly) standing on it.
+    fn pickup(&mut self, id: usize, index: usize) {
+        if self.phase != PHASE_PLAYING || index >= SUPPLY_COUNT || self.supplies[index] > 0. {
+            return;
+        }
+        let spot = supply_spot(self.current().0, index);
+        let Some(p) = self.players[id].as_mut() else {
+            return;
+        };
+        let reach = SUPPLY_TOUCH + SUPPLY_SLACK;
+        if !p.alive || (p.pos[0] - spot[0]).hypot(p.pos[2] - spot[1]) > reach {
+            return;
+        }
+        if supply_kind(index) == SUPPLY_HEALTH {
+            p.health = (p.health + SUPPLY_HEAL).min(100.);
+        }
+        self.supplies[index] = SUPPLY_RESPAWN;
+        self.broadcast(
+            ServerMsg::Pickup {
+                player: id as u8,
+                index: index as u8,
+            },
+            None,
+        );
+    }
+    fn random(&mut self) -> usize {
+        self.seed = self
+            .seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.seed >> 33) as usize
+    }
+    /// Opens the map vote: every map once, each with a different mode.
+    fn start_vote(&mut self) {
+        let mut maps = [MAP_SECTOR05, MAP_SKYREACH, MAP_FOUNDRY];
+        let mut modes = ONLINE_MODES;
+        for i in (1..3).rev() {
+            let j = self.random() % (i + 1);
+            maps.swap(i, j);
+            let j = self.random() % (i + 1);
+            modes.swap(i, j);
+        }
+        self.vote_options = [
+            (maps[0], modes[0]),
+            (maps[1], modes[1]),
+            (maps[2], modes[2]),
+        ];
+        self.vote_winner = NONE;
+        for p in self.players.iter_mut().flatten() {
+            p.vote = NONE;
+        }
+        self.phase = PHASE_VOTE;
+        self.remaining = VOTE_SECONDS;
+    }
+    /// Most votes wins; ties (or no votes) are settled at random.
+    fn tally(&mut self) -> u8 {
+        let mut totals = [0; 3];
+        for p in self.players.iter().flatten() {
+            if let Some(t) = totals.get_mut(p.vote as usize) {
+                *t += 1;
+            }
+        }
+        let best = *totals.iter().max().unwrap();
+        let tied: Vec<u8> = (0..3).filter(|&i| totals[i as usize] == best).collect();
+        tied[self.random() % tied.len()]
     }
 
     fn join(&mut self, addr: SocketAddr, name: &str) {
@@ -300,6 +405,7 @@ impl Game {
             died_at: -99.,
             ammo: [0.; 5],
             chat: CHAT_BURST,
+            vote: NONE,
         });
         self.spawn(id);
         self.send(addr, ServerMsg::Welcome { id: id as u8 });
@@ -442,8 +548,15 @@ impl Game {
     /// Starts the next match: scores reset, teams rebalanced, everyone respawns.
     fn restart_match(&mut self, advance: bool) {
         if advance {
-            self.rotation_index = (self.rotation_index + 1) % self.cfg.rotation.len().max(1);
+            if self.vote_winner != NONE {
+                self.playing = Some(self.vote_options[self.vote_winner as usize]);
+            } else {
+                self.playing = None;
+                self.rotation_index = (self.rotation_index + 1) % self.cfg.rotation.len().max(1);
+            }
         }
+        self.vote_winner = NONE;
+        self.supplies = [0.; SUPPLY_COUNT];
         self.match_id = self.match_id.wrapping_add(1);
         self.phase = PHASE_PLAYING;
         self.remaining = self.cfg.match_seconds;
@@ -498,15 +611,28 @@ impl Game {
         if self.count() == 0 {
             return;
         }
+        for t in &mut self.supplies {
+            *t = (*t - dt).max(0.);
+        }
         self.remaining = (self.remaining - dt).max(0.);
-        if self.phase == PHASE_PLAYING {
-            if self.finished() {
-                self.phase = PHASE_RESULTS;
-                self.remaining = self.cfg.results_seconds;
-                self.log.push(format!("match {} over", self.match_id));
+        match self.phase {
+            PHASE_PLAYING => {
+                if self.finished() {
+                    self.phase = PHASE_RESULTS;
+                    self.remaining = self.cfg.results_seconds;
+                    self.log.push(format!("match {} over", self.match_id));
+                }
             }
-        } else if self.remaining <= 0. {
-            self.restart_match(true);
+            _ if self.remaining > 0. => {}
+            PHASE_RESULTS if self.cfg.vote => self.start_vote(),
+            PHASE_VOTE if self.vote_winner == NONE => {
+                self.vote_winner = self.tally();
+                self.remaining = VOTE_REVEAL;
+                let (map, mode) = self.vote_options[self.vote_winner as usize];
+                self.log
+                    .push(format!("vote picked {} {}", map_name(map), mode_name(mode)));
+            }
+            _ => self.restart_match(true),
         }
     }
 
@@ -520,6 +646,11 @@ impl Game {
             mode,
             map,
             team_score: self.team_score,
+            supplies: (0..SUPPLY_COUNT)
+                .filter(|&i| self.supplies[i] <= 0.)
+                .fold(0, |bits, i| bits | 1 << i),
+            vote_options: self.vote_options,
+            vote_winner: self.vote_winner,
             players: self
                 .players
                 .iter()
@@ -540,6 +671,7 @@ impl Game {
                     yaw: p.yaw,
                     pitch: p.pitch,
                     weapon: p.weapon,
+                    vote: p.vote,
                 })
                 .collect(),
         }
@@ -569,10 +701,10 @@ impl Game {
             "{{\"game\":\"fiveplay\",\"protocol\":{VERSION},\"map\":\"{}\",\"mode\":\"{}\",\"phase\":\"{}\",\"remaining\":{:.0},\"players\":{},\"max_players\":{},\"roster\":[{}]}}",
             map_name(map),
             mode_name(mode),
-            if self.phase == PHASE_PLAYING {
-                "playing"
-            } else {
-                "results"
+            match self.phase {
+                PHASE_PLAYING => "playing",
+                PHASE_VOTE => "vote",
+                _ => "results",
             },
             self.remaining,
             self.count(),
@@ -594,6 +726,15 @@ mod tests {
     }
     fn place(g: &mut Game, id: usize, pos: V3) {
         g.players[id].as_mut().unwrap().pos = pos;
+    }
+    /// Advances `seconds` while the players on `ports` keep talking.
+    fn run(g: &mut Game, ports: &[u16], seconds: f32) {
+        for _ in 0..(seconds * 10.).ceil() as usize {
+            for &port in ports {
+                g.handle(addr(port), ClientMsg::Respawn);
+            }
+            g.step(0.1);
+        }
     }
     fn game(mode: u8) -> Game {
         Game::new(Config {
@@ -788,6 +929,7 @@ mod tests {
         let mut g = Game::new(Config {
             rotation: parse_rotation("sector05:tdm, skyreach:ffa, moon:ffa"),
             results_seconds: 1.,
+            vote: false,
             ..Default::default()
         });
         assert_eq!(g.cfg.rotation.len(), 2);
@@ -804,6 +946,92 @@ mod tests {
         assert_eq!(g.match_id, id + 1);
         assert_eq!(g.current(), (MAP_SKYREACH, MODE_FFA));
         assert_eq!(g.team_score, [0, 0]);
+    }
+
+    #[test]
+    fn players_vote_on_the_next_match() {
+        let mut g = Game::new(Config {
+            results_seconds: 1.,
+            ..Default::default()
+        });
+        let a = hello(&mut g, 1, "a");
+        let b = hello(&mut g, 2, "b");
+        let _c = hello(&mut g, 3, "c");
+        // No voting during a match.
+        g.handle(addr(1), ClientMsg::Vote { option: 1 });
+        assert_eq!(g.players[a].as_ref().unwrap().vote, NONE);
+        g.players[a].as_mut().unwrap().kills = score_limit(MODE_FFA);
+        g.step(0.1);
+        assert_eq!(g.phase, PHASE_RESULTS);
+        for _ in 0..12 {
+            g.step(0.1);
+        }
+        assert_eq!(g.phase, PHASE_VOTE);
+        let o = g.vote_options;
+        assert!(o[0].0 != o[1].0 && o[1].0 != o[2].0 && o[0].0 != o[2].0);
+        assert!(o[0].1 != o[1].1 && o[1].1 != o[2].1 && o[0].1 != o[2].1);
+        assert!(g.snapshot().vote_options == o);
+        g.handle(addr(1), ClientMsg::Vote { option: 2 });
+        g.handle(addr(2), ClientMsg::Vote { option: 0 });
+        g.handle(addr(2), ClientMsg::Vote { option: 2 });
+        g.handle(addr(2), ClientMsg::Vote { option: 7 });
+        assert_eq!(g.players[b].as_ref().unwrap().vote, 2);
+        assert!(g.remaining > 0., "c has not voted yet");
+        run(&mut g, &[1, 2, 3], VOTE_SECONDS + 0.1);
+        assert_eq!(g.vote_winner, 2);
+        assert!(g.status_json().contains("\"phase\":\"vote\""));
+        // Too late to change the result.
+        g.handle(addr(1), ClientMsg::Vote { option: 0 });
+        assert_eq!(g.vote_winner, 2);
+        let id = g.match_id;
+        run(&mut g, &[1, 2, 3], VOTE_REVEAL + 0.1);
+        assert_eq!(g.phase, PHASE_PLAYING);
+        assert_eq!(g.match_id, id + 1);
+        assert_eq!(g.current(), o[2]);
+        assert_eq!(g.snapshot().vote_winner, NONE);
+        assert!(g.players.iter().flatten().all(|p| p.kills == 0 && p.alive));
+    }
+
+    #[test]
+    fn a_full_vote_closes_early() {
+        let mut g = game(MODE_FFA);
+        hello(&mut g, 1, "a");
+        hello(&mut g, 2, "b");
+        g.start_vote();
+        g.handle(addr(1), ClientMsg::Vote { option: 1 });
+        g.handle(addr(2), ClientMsg::Vote { option: 1 });
+        g.step(0.05);
+        assert_eq!(g.vote_winner, 1);
+    }
+
+    #[test]
+    fn supply_boxes_heal_once_and_come_back() {
+        let mut g = game(MODE_FFA);
+        let a = hello(&mut g, 1, "a");
+        let medkit = supply_spot(MAP_SECTOR05, 0);
+        place(&mut g, a, [medkit[0] + 0.5, 1., medkit[1]]);
+        g.players[a].as_mut().unwrap().health = 20.;
+        // Too far from the ammo box: refused.
+        g.outbox.clear();
+        g.handle(addr(1), ClientMsg::Pickup { index: 2 });
+        assert!(g.outbox.is_empty());
+        g.handle(addr(1), ClientMsg::Pickup { index: 0 });
+        assert_eq!(g.players[a].as_ref().unwrap().health, 20. + SUPPLY_HEAL);
+        assert_eq!(
+            g.outbox[0].1,
+            ServerMsg::Pickup {
+                player: a as u8,
+                index: 0
+            }
+        );
+        assert_eq!(g.snapshot().supplies, 0b111110);
+        // Gone until it respawns.
+        g.handle(addr(1), ClientMsg::Pickup { index: 0 });
+        assert_eq!(g.players[a].as_ref().unwrap().health, 20. + SUPPLY_HEAL);
+        run(&mut g, &[1], SUPPLY_RESPAWN + 0.5);
+        assert_eq!(g.snapshot().supplies, 0b111111);
+        g.handle(addr(1), ClientMsg::Pickup { index: 0 });
+        assert_eq!(g.players[a].as_ref().unwrap().health, 100.);
     }
 
     #[test]

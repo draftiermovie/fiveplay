@@ -17,6 +17,7 @@ mod save;
 mod score;
 mod soldier;
 mod spectate;
+mod supply;
 mod ui;
 mod vote;
 mod weapons;
@@ -112,6 +113,7 @@ fn main() {
     .init_resource::<score::Scoreboard>()
     .init_resource::<objective::Objective>()
     .init_resource::<spectate::Spectate>()
+    .init_resource::<supply::Supplies>()
     .init_resource::<gamepad::Pad>()
     .init_resource::<gamepad::PadFocus>()
     .init_resource::<vote::Vote>()
@@ -122,6 +124,7 @@ fn main() {
             world::setup,
             ui::setup,
             objective::setup,
+            supply::setup,
             soldier::setup,
             gamepad::setup,
             vote::setup,
@@ -151,6 +154,7 @@ fn main() {
                 ai::bots,
                 net::update,
                 objective::update,
+                supply::update,
                 spectate::camera,
             )
                 .chain(),
@@ -169,6 +173,7 @@ fn main() {
                 ui::chat,
                 ui::sliders,
                 objective::visuals,
+                supply::visuals,
                 world::animate,
                 audio::music,
                 audio::footsteps,
@@ -333,7 +338,13 @@ fn online_smoke_test(
     mut actions: ResMut<ui::Actions>,
     spectate: Res<spectate::Spectate>,
     bots: Query<(&combat::Bot, &Transform, &Visibility)>,
-    player: Single<&player::Player>,
+    mut me: Single<
+        (&player::Player, &mut Transform),
+        (Without<combat::Bot>, Without<world::ArenaCamera>),
+    >,
+    (mut arsenal, vote): (ResMut<weapons::Arsenal>, Res<vote::Vote>),
+    mut voted: Local<bool>,
+    mut vote_shot: Local<bool>,
     mut joined: Local<Option<f32>>,
     mut stage: Local<u8>,
     mut last_screen: Local<Option<Screen>>,
@@ -347,8 +358,28 @@ fn online_smoke_test(
             "online test: screen {:?}, link {:?}, health {:.0}",
             screen_name(session.screen),
             net.link,
-            player.health
+            me.0.health
         );
+    }
+    // FIVEPLAY_TEST_VOTE=n: vote for option n when the server's vote opens.
+    if session.screen == Screen::Vote && !*voted {
+        if let Some(option) = std::env::var("FIVEPLAY_TEST_VOTE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            *voted = true;
+            info!("online test: voting for {:?}", vote.options.get(option));
+            actions.0.push(ui::Action::Vote(option));
+        }
+    }
+    if session.screen == Screen::Vote && vote.revealed() && !*vote_shot {
+        *vote_shot = true;
+        info!("online test: vote won by {:?}", vote.winning());
+        if let Ok(file) = std::env::var("FIVEPLAY_TEST_VOTE_SHOT") {
+            commands
+                .spawn(Screenshot::primary_window())
+                .observe(save_to_disk(file));
+        }
     }
     if joined.is_none() {
         if net.link == net::Link::Online && session.screen == Screen::Playing {
@@ -389,6 +420,14 @@ fn online_smoke_test(
         if let Ok(text) = std::env::var("FIVEPLAY_TEST_CHAT") {
             net.queue(fiveplay_net::ClientMsg::Chat { text });
         }
+        // FIVEPLAY_TEST_PICKUP: empty the rifle's reserve and stand on the
+        // first ammo crate; the server should hand it over.
+        if std::env::var("FIVEPLAY_TEST_PICKUP").is_ok() {
+            arsenal.reserve[0] = 0;
+            let [x, z] = fiveplay_net::supply_spot(supply::map_id(session.map), 2);
+            me.1.translation = Vec3::new(x, 1.5, z);
+            info!("online test: walking onto the ammo crate at ({x}, {z})");
+        }
     } else if *stage == 1 && since > 3. {
         *stage = 2;
         if std::env::var("FIVEPLAY_TEST_SHOOT").is_ok() {
@@ -423,8 +462,8 @@ fn online_smoke_test(
             info!("online test chat: {line}");
         }
         info!(
-            "online test: kills {} deaths {} mode {:?} map {:?}",
-            session.kills, session.deaths, session.mode, session.map
+            "online test: kills {} deaths {} mode {:?} map {:?} rifle reserve {}",
+            session.kills, session.deaths, session.mode, session.map, arsenal.reserve[0]
         );
         let file = std::env::var("FIVEPLAY_TEST_SHOT").unwrap_or("online-preview.png".into());
         commands

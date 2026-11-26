@@ -75,9 +75,9 @@ PLAY (and PLAY AGAIN) opens a vote between three map + mode options, each shown 
 
 ## Multiplayer
 
-**Playing:** on the main menu click **SERVER /** and type the server's address (`host` or `host:port`; the default port is 7777), press Enter, then **PLAY ONLINE**. `FivePlay.exe --connect host[:port]` joins directly. Click **NAME /** to choose the name other players see (letters, digits, spaces, `-` and `_`, up to 14 characters; Enter to finish). It defaults to your computer's user name and is saved. During an online match press **T** (or Enter) to chat with everyone on the server: type, Enter sends, Escape cancels; messages appear bottom left for 12 seconds. The server cleans messages (printable text, up to 80 characters) and limits each player to a short burst, then one message every 1.5 seconds. Up to six players per server, in Free For All, Team Deathmatch or Gun Game; the server picks the map and mode from its rotation, runs five-minute matches and starts the next one 12 seconds after the results. Your own team always shows as Blue. Leaving to the main menu disconnects.
+**Playing:** on the main menu click **SERVER /** and type the server's address (`host` or `host:port`; the default port is 7777), press Enter, then **PLAY ONLINE**. You can also paste it: Ctrl+V (Cmd+V on a Mac) anywhere on the main menu replaces the address with the clipboard's (a pasted `udp://host:port/...` link is cut down to `host:port`); paste works in the name and chat fields too. `FivePlay.exe --connect host[:port]` joins directly. Click **NAME /** to choose the name other players see (letters, digits, spaces, `-` and `_`, up to 14 characters; Enter to finish). It defaults to your computer's user name and is saved. During an online match press **T** (or Enter) to chat with everyone on the server: type, Enter sends, Escape cancels; messages appear bottom left for 12 seconds. The server cleans messages (printable text, up to 80 characters) and limits each player to a short burst, then one message every 1.5 seconds. Up to six players per server, in Free For All, Team Deathmatch or Gun Game, with five-minute matches. After each match's results (10 seconds) everyone votes on the next one, on the same three-card screen as offline (each map once, each with a different mode; 12 seconds, closing early once everyone has voted). Each card shows the first letters of the names of the players who picked it once the winner is revealed; ties are settled at random. Your own team always shows as Blue. Leaving to the main menu disconnects.
 
-**How it works:** a dedicated server (`server/`, plain Rust with no dependencies besides the shared protocol crate `net/`) talks to clients over UDP. Clients move their own player and report hits; the server owns health, kills, deaths, team scores, the clock, spawn points and respawns, and checks every reported hit (both alive, enemies, within weapon range, within the weapon's fire rate) before applying damage. Remote players appear as the soldier avatars the bots normally use, with name and health plates, and their shots show as tracers. Bots are not in online matches. A client of a different protocol version is told to update (0.4 introduced protocol 3 for chat, so 0.3 games and servers cannot join 0.4 ones).
+**How it works:** a dedicated server (`server/`, plain Rust with no dependencies besides the shared protocol crate `net/`) talks to clients over UDP. Clients move their own player and report hits; the server owns health, kills, deaths, team scores, the clock, spawn points and respawns, and checks every reported hit (both alive, enemies, within weapon range, within the weapon's fire rate) before applying damage. Remote players appear as the soldier avatars the bots normally use, with name and health plates, and their shots show as tracers. Bots are not in online matches. Supply boxes are run by the server: it checks you are standing at a box that is there before handing it over, so two players cannot both take one. A client of a different protocol version is told to update (0.5 introduced protocol 4 for the map vote and supply boxes, so older games and servers cannot join 0.5 ones).
 
 **Limits of this first stage:** movement is client-authoritative and hits are client-reported (validated, not re-simulated), so a modified client could still cheat; there is no lag compensation, prediction or reconciliation yet; Capture the Flag, King of the Hill and Kill Confirmed are offline only. Server and game must be the same version: a game from before Foundry and Gun Game is told to update.
 
@@ -93,7 +93,8 @@ Server settings (Dokploy **Environment** tab or `.env`):
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `FIVEPLAY_ROTATION` | `sector05:ffa,skyreach:tdm,foundry:gun,foundry:ffa,sector05:tdm,skyreach:gun` | Maps (`sector05`, `skyreach`, `foundry`) and modes (`ffa`, `tdm`, `gun`) played in turn |
+| `FIVEPLAY_VOTE` | `1` | `1`: players vote on the next map and mode after each match; `0`: play `FIVEPLAY_ROTATION` in order |
+| `FIVEPLAY_ROTATION` | `sector05:ffa,skyreach:tdm,foundry:gun,foundry:ffa,sector05:tdm,skyreach:gun` | Maps (`sector05`, `skyreach`, `foundry`) and modes (`ffa`, `tdm`, `gun`) played in turn; with voting on, only the first match after the server starts comes from it |
 | `FIVEPLAY_MATCH_SECONDS` | `300` | Match length |
 | `FIVEPLAY_MAX_PLAYERS` | `6` | 1–6 |
 | `FIVEPLAY_THREADS` | `2` | Worker threads for parallel work (Rayon); never more than the CPU cores present |
@@ -112,7 +113,9 @@ Without Dokploy: `docker compose up -d --build`, or run the binary directly with
 - **Gun Game**: everyone against everyone, but you can't choose your weapon. You start with the assault rifle and move to the next weapon every 2 kills: assault rifle, SMG, shotgun, sniper, sidearm. The 10th kill (the second with the sidearm) wins. Each new weapon comes with a full magazine, and you never run out of reserve ammo. Also played online; the server only accepts hits from the weapon your kill count allows.
 - **Kill Confirmed**: Blue against Red. A kill doesn't score by itself: the victim drops a glowing tag in their team's colour. Run over an enemy tag to confirm the kill (a point for your team), or over a teammate's tag to deny it. Tags vanish after 30 s. First to 25 wins. Bots go for any tag within about 18 m.
 
-The vote picks the mode and map for each match; **MODE /** and **MAP /** in the main menu set the defaults (saved). In the team modes you deploy on Blue's side and bots respawn on their own side. Objective bots play the objective: one defender per team guards its base, the others go for the enemy flag, escort their carrier, chase whoever has their own flag and return it when dropped; flag carriers and hill holders don't retreat to cover. In King of the Hill every bot pushes into the zone.
+The vote picks the mode and map for each match. In the team modes you deploy on Blue's side and bots respawn on their own side. Objective bots play the objective: one defender per team guards its base, the others go for the enemy flag, escort their carrier, chase whoever has their own flag and return it when dropped; flag carriers and hill holders don't retreat to cover. In King of the Hill every bot pushes into the zone.
+
+**Supply boxes** stand at six spots on every map: two medkits (green with a white cross, +50 health) and four ammo crates (orange, refill every weapon's reserve). Walk into one to take it; you only pick it up when it helps (hurt, or short of ammunition). A taken box comes back after 20 seconds. Bots grab medkits they pass while hurt. Boxes are in every mode, offline and online.
 
 Hold **Tab** during a match for the standings; the kill feed (kills and flag events) sits top right. Matches last five minutes at most.
 
@@ -130,7 +133,7 @@ Shots are tested against hit areas matching the model: head (2.5× damage, heads
 
 ## Maps
 
-Choose the map from the main menu (**MAP /**); the choice is saved.
+Each match's map is chosen in the pre-match vote.
 
 - **Sector 05**: the original enclosed concrete arena with pillar rows and central cover.
 - **Skyreach**: an open grass arena built from the Kenney Platformer Kit models in `assets/models/`: a two-step central hill, low and high walls for cover, two-step sniper perches on the flanks, and patrol drones circling overhead.

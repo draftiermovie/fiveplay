@@ -54,8 +54,6 @@ pub struct Crosshair;
 #[derive(Component, Clone, Copy)]
 pub enum Action {
     Play,
-    Mode,
-    Map,
     Loadout,
     Settings,
     Profile,
@@ -552,9 +550,6 @@ fn menu_screen(
                         Action::EditName,
                     );
                     label(p, "", 13., SKY, 12);
-                    let mode = session.mode.name();
-                    button(p, ui, &format!("MODE / {mode}"), Action::Mode);
-                    button(p, ui, &format!("MAP / {}", session.map.name()), Action::Map);
                     button(p, ui, "LOADOUT", Action::Loadout);
                     button(p, ui, "SETTINGS", Action::Settings);
                     button(p, ui, "PROFILE", Action::Profile);
@@ -1339,13 +1334,14 @@ pub fn interact(
     mut window: Single<&mut Window>,
     mut exit: MessageWriter<AppExit>,
     mut bots: Query<(&mut crate::combat::Bot, &mut Transform, &mut Visibility), Without<Player>>,
-    (mut board, mut rebind, mut objective, mut spectate, mut vote, mut net): (
+    (mut board, mut rebind, mut objective, mut spectate, mut vote, mut net, mut supplies): (
         ResMut<Scoreboard>,
         ResMut<Rebind>,
         ResMut<crate::objective::Objective>,
         ResMut<crate::spectate::Spectate>,
         ResMut<crate::vote::Vote>,
         ResMut<crate::net::Net>,
+        ResMut<crate::supply::Supplies>,
     ),
 ) {
     for action in actions.0.drain(..) {
@@ -1360,12 +1356,18 @@ pub fn interact(
                 session.screen = Screen::Vote;
             }
             Action::Vote(option) => {
+                if vote.online && vote.phase == crate::vote::Phase::Voting {
+                    net.queue(fiveplay_net::ClientMsg::Vote {
+                        option: option as u8,
+                    });
+                }
                 vote.cast(PLAYER, option);
                 state.0 = Screen::Loading;
             }
             Action::Launch => {
                 board.reset();
                 objective.reset();
+                supplies.reset();
                 *spectate = default();
                 session.notice_time = 0.;
                 session.damage = 0.;
@@ -1388,14 +1390,6 @@ pub fn interact(
                     transform.translation = crate::world::spawn_point(bot.index);
                     *visibility = Visibility::Inherited;
                 }
-            }
-            Action::Mode => {
-                session.mode = session.mode.next();
-                state.0 = Screen::Loading;
-            }
-            Action::Map => {
-                session.map = session.map.next();
-                state.0 = Screen::Loading;
             }
             Action::Loadout => session.screen = Screen::Loadout,
             Action::Settings => {
@@ -2012,7 +2006,7 @@ fn vote_cards(p: &mut ChildSpawnerCommands, ui: &UiAssets, vote: &crate::vote::V
                     }
                     for (voter, choice) in vote.votes.iter().enumerate() {
                         if *choice == Some(i) {
-                            vote_chip(chips, voter);
+                            vote_chip(chips, voter, vote.online);
                         }
                     }
                 });
@@ -2020,10 +2014,14 @@ fn vote_cards(p: &mut ChildSpawnerCommands, ui: &UiAssets, vote: &crate::vote::V
         }
     });
 }
-/// A small round icon for one voter: YOU, or the bot's number in its colour.
-fn vote_chip(p: &mut ChildSpawnerCommands, voter: usize) {
+/// A small round icon for one voter: YOU, or the bot's number (online, the
+/// first letters of the player's name) in its colour.
+fn vote_chip(p: &mut ChildSpawnerCommands, voter: usize, online: bool) {
     let (name, fill) = if voter == PLAYER {
         ("YOU".to_string(), SKY)
+    } else if online {
+        let name: String = score::name(voter).chars().take(3).collect();
+        (name, crate::soldier::colour(voter - 1))
     } else {
         (format!("{voter:02}"), crate::soldier::colour(voter - 1))
     };
@@ -2041,6 +2039,11 @@ fn vote_chip(p: &mut ChildSpawnerCommands, voter: usize) {
         BorderColor::all(Color::srgba(1., 1., 1., 0.9)),
     ))
     .with_children(|chip| {
-        text(chip, &name, if voter == PLAYER { 10. } else { 13. }, INK);
+        let size = if voter == PLAYER || name.len() > 2 {
+            10.
+        } else {
+            13.
+        };
+        text(chip, &name, size, INK);
     });
 }

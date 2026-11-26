@@ -11,7 +11,7 @@
 //! (alive, enemies, range, fire rate) before applying damage.
 
 pub const MAGIC: [u8; 2] = *b"FP";
-pub const VERSION: u8 = 3;
+pub const VERSION: u8 = 4;
 pub const DEFAULT_PORT: u16 = 7777;
 /// Players per server. The client shows remote players with its six bot
 /// avatars, so this is one local player plus six others at most.
@@ -132,6 +132,69 @@ pub fn clean_name(name: &str) -> String {
     }
 }
 
+/// Supply boxes: six spots per map, the first two medkits, the rest ammo.
+/// Walking into an available box collects it; it comes back after
+/// `SUPPLY_RESPAWN` seconds.
+pub const SUPPLY_COUNT: usize = 6;
+pub const SUPPLY_RESPAWN: f32 = 20.;
+/// Health a medkit restores (up to 100).
+pub const SUPPLY_HEAL: f32 = 50.;
+/// How close (horizontally) a player must get to collect a box; the server
+/// allows some extra for positions a few packets old.
+pub const SUPPLY_TOUCH: f32 = 1.4;
+pub const SUPPLY_SLACK: f32 = 2.;
+pub const SUPPLY_HEALTH: u8 = 0;
+pub const SUPPLY_AMMO: u8 = 1;
+pub fn supply_kind(index: usize) -> u8 {
+    if index < 2 {
+        SUPPLY_HEALTH
+    } else {
+        SUPPLY_AMMO
+    }
+}
+/// Where supply box `index` sits on `map` (x, z on the floor). Each map's
+/// spots are point-symmetric so neither side is favoured, and stay clear of
+/// spawn points and cover (a client test checks the floor is open there).
+pub fn supply_spot(map: u8, index: usize) -> [f32; 2] {
+    const SECTOR05: [[f32; 2]; SUPPLY_COUNT] = [
+        [0., 20.],
+        [0., -20.],
+        [8., 12.],
+        [-8., -12.],
+        [8., -12.],
+        [-8., 12.],
+    ];
+    const SKYREACH: [[f32; 2]; SUPPLY_COUNT] = [
+        [0., 20.],
+        [0., -20.],
+        [18., 0.],
+        [-18., 0.],
+        [7., -7.],
+        [-7., 7.],
+    ];
+    const FOUNDRY: [[f32; 2]; SUPPLY_COUNT] = [
+        [0., 12.],
+        [0., -12.],
+        [10., 3.],
+        [-10., -3.],
+        [14., 19.],
+        [-14., -19.],
+    ];
+    let spots = match map {
+        MAP_SKYREACH => &SKYREACH,
+        MAP_FOUNDRY => &FOUNDRY,
+        _ => &SECTOR05,
+    };
+    spots[index % SUPPLY_COUNT]
+}
+
+/// Server map vote: how long players have to choose, and how long the
+/// winner is shown before the match starts.
+pub const VOTE_SECONDS: f32 = 12.;
+pub const VOTE_REVEAL: f32 = 3.;
+/// Modes a server can run (the objective modes are offline only).
+pub const ONLINE_MODES: [u8; 3] = [MODE_FFA, MODE_TDM, MODE_GUN];
+
 /// Longest chat message kept.
 pub const CHAT_LEN: usize = 80;
 /// Chat messages a player may send in a burst, and how many seconds it
@@ -188,6 +251,14 @@ pub enum ClientMsg {
     Chat {
         text: String,
     },
+    /// A vote for one of the three options of the server's map vote.
+    Vote {
+        option: u8,
+    },
+    /// Walked into supply box `index`; the server decides who gets it.
+    Pickup {
+        index: u8,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -214,10 +285,17 @@ pub enum ServerMsg {
         from: u8,
         text: String,
     },
+    /// `player` collected supply box `index`.
+    Pickup {
+        player: u8,
+        index: u8,
+    },
 }
 
 pub const PHASE_PLAYING: u8 = 0;
 pub const PHASE_RESULTS: u8 = 1;
+/// Players vote on the next match's map and mode.
+pub const PHASE_VOTE: u8 = 2;
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Snapshot {
@@ -230,6 +308,12 @@ pub struct Snapshot {
     pub mode: u8,
     pub map: u8,
     pub team_score: [u16; 2],
+    /// Supply boxes available right now (bit `i` = box `i`).
+    pub supplies: u8,
+    /// The vote's three (map, mode) options (`PHASE_VOTE` only).
+    pub vote_options: [(u8, u8); 3],
+    /// The winning option once the vote is decided, else `NONE`.
+    pub vote_winner: u8,
     pub players: Vec<PlayerState>,
 }
 
@@ -252,6 +336,8 @@ pub struct PlayerState {
     pub yaw: f32,
     pub pitch: f32,
     pub weapon: u8,
+    /// Option voted for in the map vote, or `NONE`.
+    pub vote: u8,
 }
 
 struct Writer(Vec<u8>);
@@ -379,6 +465,16 @@ impl ClientMsg {
                 w.str(text);
                 w
             }
+            ClientMsg::Vote { option } => {
+                let mut w = Writer::new(9);
+                w.u8(*option);
+                w
+            }
+            ClientMsg::Pickup { index } => {
+                let mut w = Writer::new(10);
+                w.u8(*index);
+                w
+            }
         };
         w.0
     }
@@ -407,6 +503,8 @@ impl ClientMsg {
             6 => ClientMsg::Fall,
             7 => ClientMsg::Bye,
             8 => ClientMsg::Chat { text: r.str()? },
+            9 => ClientMsg::Vote { option: r.u8()? },
+            10 => ClientMsg::Pickup { index: r.u8()? },
             _ => return None,
         })
     }
@@ -435,6 +533,12 @@ impl ServerMsg {
                 w.u8(s.map);
                 w.u16(s.team_score[0]);
                 w.u16(s.team_score[1]);
+                w.u8(s.supplies);
+                for (map, mode) in s.vote_options {
+                    w.u8(map);
+                    w.u8(mode);
+                }
+                w.u8(s.vote_winner);
                 w.u8(s.players.len() as u8);
                 for p in &s.players {
                     w.u8(p.id);
@@ -451,6 +555,7 @@ impl ServerMsg {
                     w.f32(p.yaw);
                     w.f32(p.pitch);
                     w.u8(p.weapon);
+                    w.u8(p.vote);
                 }
                 w
             }
@@ -478,6 +583,12 @@ impl ServerMsg {
                 w.str(text);
                 w
             }
+            ServerMsg::Pickup { player, index } => {
+                let mut w = Writer::new(7);
+                w.u8(*player);
+                w.u8(*index);
+                w
+            }
         };
         w.0
     }
@@ -495,6 +606,9 @@ impl ServerMsg {
                     mode: r.u8()?,
                     map: r.u8()?,
                     team_score: [r.u16()?, r.u16()?],
+                    supplies: r.u8()?,
+                    vote_options: [(r.u8()?, r.u8()?), (r.u8()?, r.u8()?), (r.u8()?, r.u8()?)],
+                    vote_winner: r.u8()?,
                     players: Vec::new(),
                 };
                 let count = r.u8()? as usize;
@@ -517,6 +631,7 @@ impl ServerMsg {
                         yaw: r.f32()?,
                         pitch: r.f32()?,
                         weapon: r.u8()?,
+                        vote: r.u8()?,
                     });
                 }
                 ServerMsg::Snapshot(s)
@@ -534,6 +649,10 @@ impl ServerMsg {
             6 => ServerMsg::Chat {
                 from: r.u8()?,
                 text: r.str()?,
+            },
+            7 => ServerMsg::Pickup {
+                player: r.u8()?,
+                index: r.u8()?,
             },
             _ => return None,
         })
@@ -570,6 +689,8 @@ mod tests {
             ClientMsg::Chat {
                 text: "gg all".into(),
             },
+            ClientMsg::Vote { option: 2 },
+            ClientMsg::Pickup { index: 5 },
         ];
         for m in msgs {
             assert_eq!(ClientMsg::decode(&m.encode()), Some(m));
@@ -585,6 +706,13 @@ mod tests {
             mode: MODE_TDM,
             map: MAP_SKYREACH,
             team_score: [7, 9],
+            supplies: 0b101101,
+            vote_options: [
+                (MAP_FOUNDRY, MODE_GUN),
+                (MAP_SECTOR05, MODE_FFA),
+                (MAP_SKYREACH, MODE_TDM),
+            ],
+            vote_winner: 1,
             players: vec![PlayerState {
                 id: 5,
                 name: "NOVA".into(),
@@ -600,6 +728,7 @@ mod tests {
                 yaw: 0.3,
                 pitch: 0.1,
                 weapon: 2,
+                vote: 0,
             }],
         };
         let msgs = [
@@ -621,6 +750,10 @@ mod tests {
             ServerMsg::Chat {
                 from: 2,
                 text: "nice shot".into(),
+            },
+            ServerMsg::Pickup {
+                player: 3,
+                index: 1,
             },
         ];
         for m in msgs {
@@ -654,6 +787,18 @@ mod tests {
         assert_eq!(clean_name("  ben<script>  "), "BENSCRIPT");
         assert_eq!(clean_name(""), "PLAYER");
         assert_eq!(clean_name("abcdefghijklmnopqrstuvwxyz").len(), NAME_LEN);
+    }
+    #[test]
+    fn supply_spots_are_symmetric_and_split_by_kind() {
+        for map in [MAP_SECTOR05, MAP_SKYREACH, MAP_FOUNDRY] {
+            let spots: Vec<_> = (0..SUPPLY_COUNT).map(|i| supply_spot(map, i)).collect();
+            for s in &spots {
+                assert!(spots.contains(&[-s[0], -s[1]]), "{s:?} has no mirror");
+            }
+        }
+        assert_eq!(supply_kind(0), SUPPLY_HEALTH);
+        assert_eq!(supply_kind(1), SUPPLY_HEALTH);
+        assert!((2..SUPPLY_COUNT).all(|i| supply_kind(i) == SUPPLY_AMMO));
     }
     #[test]
     fn chat_is_cleaned() {

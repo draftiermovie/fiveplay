@@ -120,6 +120,19 @@ impl Arsenal {
             self.cooldown = self.cooldown.max(0.25);
         }
     }
+    /// Any weapon's reserve below what a fresh deploy carries.
+    pub fn needs_ammo(&self) -> bool {
+        let full = Self::default().reserve;
+        (0..WEAPONS.len()).any(|i| self.reserve[i] < full[i])
+    }
+    /// Tops every weapon's reserve back up to a fresh deploy's (an ammo
+    /// crate); never takes ammunition away.
+    pub fn refill(&mut self) {
+        let full = Self::default().reserve;
+        for i in 0..WEAPONS.len() {
+            self.reserve[i] = self.reserve[i].max(full[i]);
+        }
+    }
     fn random(&mut self) -> f32 {
         self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1);
         ((self.seed >> 32) as u32 as f32 / u32::MAX as f32) * 2. - 1.

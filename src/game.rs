@@ -67,10 +67,6 @@ impl Mode {
     pub fn from_key(key: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|m| m.key() == key)
     }
-    pub fn next(self) -> Self {
-        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
-        Self::ALL[(i + 1) % Self::ALL.len()]
-    }
     /// Blue against Red (everything except Free For All and Gun Game).
     pub fn teams(self) -> bool {
         !matches!(self, Mode::FreeForAll | Mode::GunGame)
@@ -105,10 +101,6 @@ impl Map {
     }
     pub fn from_key(key: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|m| m.key() == key)
-    }
-    pub fn next(self) -> Self {
-        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
-        Self::ALL[(i + 1) % Self::ALL.len()]
     }
 }
 #[derive(Resource)]
