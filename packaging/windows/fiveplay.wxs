@@ -1,10 +1,19 @@
 <!--
   Windows installer (WiX Toolset 5). Built by .github/workflows/build.yml:
-    wix build packaging/windows/fiveplay.wxs -arch x64 -d Version=0.1.42 -d ExePath=dist/FivePlay.exe -o dist/FivePlay.msi
-  Installs FivePlay.exe to Program Files\FivePlay with a Start menu shortcut.
-  The UpgradeCode must never change: it lets a newer MSI replace an older one.
+    wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
+    wix build packaging/windows/fiveplay.wxs -arch x64 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext
+      -d Version=0.5.42 -d ExePath=dist/FivePlay.exe -o dist/FivePlay.msi
+
+  A setup wizard: welcome, custom setup (where to install, and whether to
+  add a desktop shortcut), install, and a finish page that can launch the
+  game. Installs FivePlay.exe to Program Files\FivePlay with a Start menu
+  shortcut and, unless unticked, a desktop shortcut; Apps & Features shows
+  the game's icon and links. A newer MSI replaces an older one in place.
+  The artwork (fiveplay.ico, banner.bmp, dialog.bmp) comes from
+  tools/make_icons.py. The UpgradeCode must never change.
 -->
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="FivePlay"
            Manufacturer="FivePlay"
            Version="$(var.Version)"
@@ -13,23 +22,79 @@
     <MajorUpgrade DowngradeErrorMessage="A newer version of FivePlay is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
+    <!-- Apps & Features: the game's icon and links. Its Modify button
+         reopens the wizard, e.g. to add or remove the desktop shortcut. -->
+    <Icon Id="FivePlayIcon" SourceFile="packaging/windows/fiveplay.ico" />
+    <Property Id="ARPPRODUCTICON" Value="FivePlayIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/draftiermovie/fiveplay" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/draftiermovie/fiveplay" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/draftiermovie/fiveplay/releases/latest" />
+
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="FivePlay" />
     </StandardDirectory>
 
-    <ComponentGroup Id="Game" Directory="INSTALLFOLDER">
-      <Component>
-        <File Source="$(var.ExePath)" Name="FivePlay.exe" KeyPath="yes">
-          <Shortcut Name="FivePlay"
-                    Directory="ProgramMenuFolder"
-                    WorkingDirectory="INSTALLFOLDER"
-                    Advertise="yes" />
-        </File>
-      </Component>
-    </ComponentGroup>
+    <Component Id="Game" Directory="INSTALLFOLDER">
+      <File Id="FivePlayExe" Source="$(var.ExePath)" Name="FivePlay.exe" KeyPath="yes" />
+    </Component>
+    <Component Id="StartMenuShortcut" Directory="ProgramMenuFolder">
+      <Shortcut Id="StartMenu"
+                Name="FivePlay"
+                Description="Arena shooter against bots or online"
+                Target="[#FivePlayExe]"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="FivePlayIcon" />
+      <RegistryValue Root="HKCU" Key="Software\FivePlay" Name="StartMenuShortcut"
+                     Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+    <Component Id="DesktopShortcut" Directory="DesktopFolder">
+      <Shortcut Id="Desktop"
+                Name="FivePlay"
+                Description="Arena shooter against bots or online"
+                Target="[#FivePlayExe]"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="FivePlayIcon" />
+      <RegistryValue Root="HKCU" Key="Software\FivePlay" Name="DesktopShortcut"
+                     Type="integer" Value="1" KeyPath="yes" />
+    </Component>
 
-    <Feature Id="Main">
-      <ComponentGroupRef Id="Game" />
+    <Feature Id="Main"
+             Title="FivePlay"
+             Description="The game and its Start menu shortcut."
+             AllowAbsent="no"
+             ConfigurableDirectory="INSTALLFOLDER"
+             Display="expand">
+      <ComponentRef Id="Game" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <Feature Id="Desktop"
+               Title="Desktop shortcut"
+               Description="A FivePlay shortcut on the desktop.">
+        <ComponentRef Id="DesktopShortcut" />
+      </Feature>
     </Feature>
+
+    <!-- The wizard: the standard feature-tree pages without the licence
+         page (Welcome goes straight to Custom Setup, where Browse picks the
+         install folder), in FivePlay's colours. -->
+    <ui:WixUI Id="WixUI_FeatureTree" />
+    <WixVariable Id="WixUIBannerBmp" Value="packaging/windows/banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="packaging/windows/dialog.bmp" />
+    <UI>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="CustomizeDlg"
+               Order="10" Condition="NOT Installed" />
+      <Publish Dialog="CustomizeDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg"
+               Order="10" Condition="NOT Installed" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchFivePlay"
+               Order="1" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
+
+    <!-- Finish page: "Launch FivePlay", ticked. -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch FivePlay" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[#FivePlayExe]" />
+    <CustomAction Id="LaunchFivePlay"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixShellExec"
+                  Impersonate="yes" />
   </Package>
 </Wix>

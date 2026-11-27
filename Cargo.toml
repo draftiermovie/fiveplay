@@ -20,6 +20,8 @@ assets = [
 bevy = { version = "0.20.1", features = ["wav"] }
 avian3d = "0.8.0"
 fiveplay-net = { path = "net" }
+# Only for the window icon type; the same version Bevy uses.
+winit = { version = "0.30", default-features = false }
 tokio = { version = "1.54.1", default-features = false, features = ["rt", "net", "sync", "macros", "time"] }
 
 [lints.rust]
@@ -34,3 +36,7 @@ opt-level = 3
 [profile.release]
 # Smaller standalone exe (tools/build-exe.ps1); symbols are not needed by players.
 strip = true
+
+[build-dependencies]
+# Puts the icon and version details into FivePlay.exe (Windows builds only).
+winresource = { version = "0.1", default-features = false }
