@@ -1,5 +1,7 @@
 //! Embeds every file under `assets/` into the executable (see
-//! `src/embedded.rs`), so the game ships as a single `.exe`.
+//! `src/embedded.rs`), so the game ships as a single `.exe`. Windows builds
+//! also get the game icon and version details (the name Explorer, the
+//! taskbar and Task Manager show).
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -41,4 +43,26 @@ fn main() {
     code.push_str("];\n");
     let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("assets.rs");
     fs::write(out, code).unwrap();
+    windows_resources();
+}
+
+/// Icon (`packaging/windows/fiveplay.ico`, from `tools/make_icons.py`) and
+/// version details for `FivePlay.exe`. Needs the Windows SDK's resource
+/// compiler, which the Visual Studio C++ build tools include.
+fn windows_resources() {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let icon = "packaging/windows/fiveplay.ico";
+    println!("cargo:rerun-if-changed={icon}");
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon(icon)
+        .set("ProductName", "FivePlay")
+        .set("FileDescription", "FivePlay")
+        .set("CompanyName", "FivePlay")
+        .set("OriginalFilename", "FivePlay.exe");
+    if let Err(err) = res.compile() {
+        // A missing resource compiler only costs the icon, not the build.
+        println!("cargo:warning=FivePlay.exe built without its icon: {err}");
+    }
 }

@@ -182,6 +182,7 @@ fn main() {
         )
             .chain(),
     )
+    .add_systems(Update, window_icon)
     .add_systems(Last, save::autosave);
     if std::env::var("FIVEPLAY_THUMBNAIL").is_ok() {
         app.add_systems(Update, thumbnail.after(ui::fps));
@@ -196,6 +197,50 @@ fn main() {
 /// `FIVEPLAY_THUMBNAIL=<map>` (e.g. `foundry`): shows that map from the menu
 /// camera with every UI element hidden, saves `<map>-thumbnail.png` and
 /// exits. Scaled to 640x360 it is the vote card art in `assets/ui/maps`.
+/// Gives the game window the FivePlay icon (title bar and taskbar on Windows
+/// and Linux; macOS takes the app bundle's). Tries each frame until the
+/// window exists, then stops.
+fn window_icon(
+    window: Option<Single<Entity, With<bevy::window::PrimaryWindow>>>,
+    _main_thread: bevy::ecs::system::NonSendMarker,
+    mut done: Local<bool>,
+) {
+    use bevy::{
+        asset::RenderAssetUsages,
+        image::{CompressedImageFormats, Image, ImageSampler, ImageType},
+    };
+    if *done {
+        return;
+    }
+    let Some(window) = window else {
+        return;
+    };
+    bevy::winit::WINIT_WINDOWS.with_borrow(|windows| {
+        let Some(winit_window) = windows.get_window(*window) else {
+            return;
+        };
+        *done = true;
+        let image = Image::from_buffer(
+            include_bytes!("../packaging/icon.png"),
+            ImageType::Extension("png"),
+            CompressedImageFormats::NONE,
+            true,
+            ImageSampler::Default,
+            RenderAssetUsages::MAIN_WORLD,
+        );
+        let icon = image.ok().and_then(|image| {
+            let rgba =
+                image.convert(bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb)?;
+            let (w, h) = (rgba.width(), rgba.height());
+            winit::window::Icon::from_rgba(rgba.data?, w, h).ok()
+        });
+        match icon {
+            Some(icon) => winit_window.set_window_icon(Some(icon)),
+            None => warn!("Could not load the window icon"),
+        }
+    });
+}
+
 fn thumbnail(
     mut commands: Commands,
     time: Res<Time>,

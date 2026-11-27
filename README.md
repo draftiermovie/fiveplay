@@ -35,6 +35,8 @@ cargo fmt --check
 
 This produces `dist/FivePlay.exe`: everything (models, audio, UI images) is inside, and the C runtime is linked statically, so players need nothing but that one file on a 64-bit Windows PC with a DirectX 12/Vulkan-capable GPU. `-Server` is optional and pre-fills the server address for **PLAY ONLINE**; without it players type the address once (it is saved). The release build has no console window. It uses its own `target/dist` folder, so the first run compiles Bevy again (roughly 25–30 minutes); later runs take seconds.
 
+**Downloads:** each [GitHub release](https://github.com/draftiermovie/fiveplay/releases) has `FivePlay.exe` (the single file above), `FivePlay.msi`, a macOS `.dmg` and Linux AppImage and `.deb` packages. The MSI is a setup wizard: choose where to install and whether to add a desktop shortcut, and tick "Launch FivePlay" at the end; it adds a Start menu shortcut, shows the game's icon and links in Apps & Features (where Modify adds or removes the desktop shortcut), and a newer MSI upgrades an older install in place. The icon, the installer artwork and the exe's version details come from `packaging/icon.png`: after changing it run `python tools/make_icons.py` (needs Pillow) to rebuild `packaging/windows/fiveplay.ico`, `banner.bmp` and `dialog.bmp`.
+
 Original placeholder WAV assets are included. Regenerate them with `./tools/generate_audio.ps1` (Windows PowerShell) or `python tools/generate_audio.py` if Python is installed.
 
 ### Linux

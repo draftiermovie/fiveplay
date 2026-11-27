@@ -55,13 +55,43 @@ jobs:
       - name: Package
         run: |
           dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/fiveplay.exe dist/FivePlay.exe
           wix build packaging/windows/fiveplay.wxs -arch x64 `
+            -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext `
             -d Version=${{ steps.version.outputs.msi }} `
             -d ExePath=dist/FivePlay.exe `
             -o dist/FivePlay.msi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check the exe icon and the installer
+        # Installs the MSI silently (default choices), checks the files and
+        # both shortcuts are there, then uninstalls and checks they are gone.
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $icon = [System.Drawing.Icon]::ExtractAssociatedIcon("$PWD\dist\FivePlay.exe")
+          $info = (Get-Item dist/FivePlay.exe).VersionInfo
+          Write-Host "exe: $($info.ProductName) $($info.ProductVersion), icon $($icon.Width)x$($icon.Height)"
+          if ($info.ProductName -ne "FivePlay") { throw "FivePlay.exe has no version resource (and so no icon)" }
+          $msi = "$PWD\dist\FivePlay.msi"
+          $p = Start-Process msiexec -ArgumentList "/i `"$msi`" /qn /l*v install.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content install.log -Tail 60; throw "install failed: $($p.ExitCode)" }
+          $expect = @(
+            "$env:ProgramFiles\FivePlay\FivePlay.exe",
+            "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\FivePlay.lnk",
+            "$env:PUBLIC\Desktop\FivePlay.lnk"
+          )
+          foreach ($f in $expect) {
+            if (-not (Test-Path $f)) { throw "missing after install: $f" }
+            Write-Host "installed: $f"
+          }
+          $p = Start-Process msiexec -ArgumentList "/x `"$msi`" /qn" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "uninstall failed: $($p.ExitCode)" }
+          foreach ($f in $expect) {
+            if (Test-Path $f) { throw "left behind after uninstall: $f" }
+          }
+          Write-Host "uninstall removed everything"
       - uses: actions/upload-artifact@v4
         with:
           name: FivePlay-windows
